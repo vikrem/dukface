@@ -1,0 +1,3 @@
+[submodule "vendor/duktape"]
+	path = vendor/duktape
+	url = https://github.com/svaarala/duktape-releases.git
