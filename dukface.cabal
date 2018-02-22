@@ -2,7 +2,7 @@ name:                dukface
 version:             0.1.0.0
 -- synopsis:
 -- description:
-homepage:            https://github.com/githubuser/dukface#readme
+homepage:            https://github.com/vikrem/dukface#readme
 license:             BSD3
 license-file:        LICENSE
 author:              Author name here
@@ -12,13 +12,60 @@ category:            Web
 build-type:          Simple
 extra-source-files:  README.md
 cabal-version:       >=1.10
+extra-source-files:
+  README.md
+  vendor/duktape/src/duktape.c
+  vendor/duktape/src/duktape.h
+  vendor/duktape/src/duk_config.h
+tested-with:
+  GHC == 8.2.2
 
 library
   hs-source-dirs:      src
   exposed-modules:     Lib
   build-depends:       base >= 4.7 && < 5
+                     , inline-c
   default-language:    Haskell2010
+  ghc-options: -Wall
+  c-sources: vendor/duktape/src/duktape.c
+  include-dirs: vendor/duktape/src
+  includes: duktape.h
+  install-includes: duktape.h
+  cc-options: -Wall -Wno-ignored-qualifiers -std=c99 -fstrict-aliasing -fomit-frame-pointer
+  default-extensions: BangPatterns
+                    , ConstraintKinds
+                    , DataKinds
+                    , DefaultSignatures
+                    , DeriveFoldable
+                    , DeriveFunctor
+                    , DeriveGeneric
+                    , DeriveLift
+                    , DeriveTraversable
+                    , DerivingStrategies
+                    , EmptyCase
+                    , ExistentialQuantification
+                    , FlexibleContexts
+                    , FlexibleInstances
+                    , FunctionalDependencies
+                    , GADTs
+                    , GeneralizedNewtypeDeriving
+                    , InstanceSigs
+                    , KindSignatures
+                    , LambdaCase
+                    , MultiParamTypeClasses
+                    , MultiWayIf
+                    , NamedFieldPuns
+                    , OverloadedStrings
+                    , PatternSynonyms
+                    , RankNTypes
+                    , ScopedTypeVariables
+                    , StandaloneDeriving
+                    , TupleSections
+                    , TypeApplications
+                    , TypeFamilies
+                    , TypeFamilyDependencies
+                    , TypeOperators
 
 source-repository head
   type:     git
-  location: https://github.com/githubuser/dukface
+  location: https://github.com/vikrem/dukface
