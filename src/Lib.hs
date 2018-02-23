@@ -42,29 +42,23 @@ data DukType =
   | DukPointer
   | DukLightFunc
 
-data DukEnv = DukEnv { ctx :: DuktapeCtx }
+data DukEnv = DukEnv { ctx :: DuktapeCtx, main :: ThreadId }
 
 type Duk a = StateT DukEnv IO a
 
-cleanup :: Ptr DuktapeHeap -> IO ()
+cleanup :: DuktapeCtx -> IO ()
 cleanup ctx = [C.exp| void { duk_destroy_heap($(void* ctx')) }|]
   where
    ctx' = castPtr ctx
 
 runDuk :: Duk a -> IO a
 runDuk dk = do
-  victim <- myThreadId
-  fatalHandler <- $(C.mkFunPtr [t|Ptr () -> CString -> IO ()|]) $ captureExc victim
-  (ctx :: DuktapeCtx) <- castPtr <$> [C.block| void* {
-      return duk_create_heap(NULL, NULL, NULL, 0, $(void (*fatalHandler)(void*, const char*)) );
-    }|]
-  (ret, _) <- runStateT dk $ DukEnv ctx
-  cleanup ctx
-  freeHaskellFunPtr fatalHandler
+  me <- myThreadId
+  (ret, _) <- bracket
+    ((castPtr <$> [C.exp| void* {duk_create_heap_default()}|]) :: IO DuktapeCtx)
+    cleanup
+    (\ctx -> runStateT dk $ DukEnv ctx me)
   return ret
-  where
-    captureExc :: ThreadId -> a -> CString -> IO ()
-    captureExc target _ msg = (peekCString msg >>= throwString) `catchAny` \(e :: SomeException) -> throwTo target e
 
 execJS :: T.Text -> Duk String
 execJS code = do
