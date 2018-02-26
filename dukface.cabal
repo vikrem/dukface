@@ -31,6 +31,9 @@ library
                      , text
                      , safe-exceptions
                      , async
+                     , aeson
+                     , vector
+                     , unordered-containers
   default-language:    Haskell2010
   ghc-options: -Wall
   c-sources: vendor/duktape/src/duktape.c
