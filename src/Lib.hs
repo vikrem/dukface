@@ -42,7 +42,7 @@ data DukType =
   | DukPointer
   | DukLightFunc
 
-data DukEnv = DukEnv { ctx :: DuktapeCtx, main :: ThreadId }
+data DukEnv = DukEnv { ctx :: DuktapeCtx, main :: ThreadId, gc :: IO () }
 
 type Duk a = StateT DukEnv IO a
 
@@ -54,10 +54,11 @@ cleanup ctx = [C.exp| void { duk_destroy_heap($(void* ctx')) }|]
 runDuk :: Duk a -> IO a
 runDuk dk = do
   me <- myThreadId
-  (ret, _) <- bracket
+  (ret, newE) <- bracket
     ((castPtr <$> [C.exp| void* {duk_create_heap_default()}|]) :: IO DuktapeCtx)
     cleanup
-    (\ctx -> runStateT dk $ DukEnv ctx me)
+    (\ctx -> runStateT dk $ DukEnv ctx me (pure ()))
+  gc newE
   return ret
 
 execJS :: T.Text -> Duk String
@@ -69,3 +70,18 @@ execJS code = do
     return duk_to_string($(void* ctx'), -1);
   }|]
   lift $ peekCString pArr
+
+injectFunc :: (DuktapeCtx -> IO C.CInt) -> T.Text -> Duk ()
+injectFunc fn name = do
+  ctx' <- castPtr <$> gets ctx
+  let name' = T.encodeUtf8 name
+  wrappedFunc <- liftIO $ $(C.mkFunPtr [t|Ptr () -> IO C.CInt|]) $ fn . castPtr
+  liftIO $ [C.block| void {
+    duk_push_global_object($(void* ctx'));
+    duk_push_c_function($(void* ctx'), $(int (*wrappedFunc)(void*)), 0);
+    duk_put_prop_lstring($(void* ctx'), -2, $bs-ptr:name', $bs-len:name');
+  }|]
+  oldGc <- gets gc
+  modify $ \e -> e {gc = freeHaskellFunPtr wrappedFunc >> oldGc}
+  -- TODO clean this ^
+  pure ()
