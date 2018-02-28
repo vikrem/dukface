@@ -91,9 +91,13 @@ execJS :: FromJSON v => T.Text -> Duk v
 execJS code = do
   ctx' <- castPtr <$> gets ctx
   let bs = T.encodeUtf8 code
+  errCode <- lift $ [C.exp| int {duk_peval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs)}|]
+  lift $ when (errCode /= 0) $ do
+    err <- [C.exp| const char* { duk_safe_to_string($(void* ctx'), -1) }|]
+    peekCString err >>= throwString
   pArr <- lift $ [C.block| const char* {
     duk_peval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs);
-    return duk_to_string($(void* ctx'), -1);
+    return duk_safe_to_string($(void* ctx'), -1);
   }|]
   s <- liftIO $ BS.packCString pArr
   case eitherDecode $ BSL.fromStrict s of
