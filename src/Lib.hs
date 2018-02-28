@@ -26,9 +26,13 @@ import Data.Monoid
 
 import Control.Monad.State
 import Control.Monad.State.Class
+import Control.Monad.Reader
+import Control.Monad.Reader.Class
 import Control.Exception.Safe
 import Control.Concurrent hiding (throwTo)
 import Control.Concurrent.Async
+
+import Control.Concurrent.MVar
 
 import GHC.TypeLits
 import Data.Proxy
@@ -55,9 +59,11 @@ data DukType =
   -- | DukPointer
   -- | DukLightFunc
 
-data DukEnv = DukEnv { ctx :: DuktapeCtx, main :: ThreadId, gc :: IO () }
+data DukEnv = DukEnv { ctx :: DuktapeCtx, main :: ThreadId, gc :: IO (), exc :: MVar SomeException  }
+data DukCallEnv = DukCallEnv { dceCtx :: DuktapeCtx, dceExc :: MVar SomeException }
 
 type Duk a = StateT DukEnv IO a
+type DukCall a = ReaderT DukCallEnv IO a
 
 type family Arity a :: Nat where
   Arity (r -> a) = 1 + Arity a
@@ -71,12 +77,15 @@ cleanup ctx = [C.exp| void { duk_destroy_heap($(void* ctx')) }|]
 runDuk :: Duk a -> IO a
 runDuk dk = do
   me <- myThreadId
+  excBox <- newEmptyMVar
   (ret, newE) <- bracket
     ((castPtr <$> [C.exp| void* {duk_create_heap_default()}|]) :: IO DuktapeCtx)
     cleanup
-    (\ctx -> runStateT dk $ DukEnv ctx me (pure ()))
+    (\ctx -> runStateT dk $ DukEnv ctx me (pure ()) excBox)
   gc newE
-  return ret
+  tryReadMVar excBox >>= \case
+    Just e -> throwM e >> return ret
+    Nothing -> return ret
 
 execJS :: T.Text -> Duk String
 execJS code = do
@@ -90,9 +99,14 @@ execJS code = do
 
 injectFunc :: Dukkable f => f -> T.Text -> Duk ()
 injectFunc fn name = do
-  ctx' <- castPtr <$> gets ctx
+  ctx <- gets ctx
+  let ctx' = castPtr ctx
+  excBox <- gets exc
   let name' = T.encodeUtf8 name
-  wrappedFunc <- liftIO $ $(C.mkFunPtr [t|Ptr () -> IO C.CInt|]) $ entry fn . castPtr
+  let runFunc = runReaderT (entry fn) (DukCallEnv ctx excBox) `catchAny` \(e :: SomeException) -> do
+        void $ tryPutMVar excBox e
+        return $ [C.pure| int {DUK_RET_EVAL_ERROR}|]
+  wrappedFunc <- liftIO $ $(C.mkFunPtr [t|Ptr () -> IO C.CInt|]) $ const runFunc
   let numArgs = fromInteger $ getArgs fn
   liftIO $ [C.block| void {
     duk_push_global_object($(void* ctx'));
@@ -106,36 +120,37 @@ injectFunc fn name = do
 class KnownNat (Arity f) => Dukkable f where
   getArgs :: KnownNat (Arity f) => f -> Integer
   getArgs _ = natVal (Proxy :: Proxy (Arity f))
-  entry :: f -> DuktapeCtx -> IO C.CInt
+  entry :: f -> DukCall C.CInt
 
 instance Dukkable () where
-  entry _ ctx = pushVal ctx Null >> return 1
+  entry _ = do { ctx <- asks dceCtx; liftIO $ pushVal ctx Null; return 1}
 
 instance {-# OVERLAPS #-} (ToJSON v, KnownNat (Arity v)) => Dukkable v where
-  entry val ctx = pushVal ctx (toJSON val) >> return 1
+  entry val = do { ctx <- asks dceCtx; liftIO $ pushVal ctx (toJSON val); return 1 }
 
 instance (FromJSON a, KnownNat (Arity (a -> v)), Dukkable v) => Dukkable (a -> v) where
-  entry f ctx = do
-    let ctx' = castPtr ctx
-    str <- join $ BS.packCString <$> [C.block|const char* {
+  entry f = do
+    ctx' <- castPtr <$> asks dceCtx
+    str <- liftIO $ join $ BS.packCString <$> [C.block|const char* {
               const char* ret = duk_json_encode($(void* ctx'), -1);
               duk_pop($(void* ctx'));
               return ret;
     }|]
     case decode (BSL.fromStrict str) of
        Nothing -> return $ [C.pure| int {DUK_RET_TYPE_ERROR}|]
-       Just val -> entry (f val) ctx
+       Just val -> entry (f val)
 
 instance {-# OVERLAPS #-} (KnownNat (Arity ((JSCallback a) -> v)), Dukkable v) => Dukkable (JSCallback a -> v) where
-  entry f ctx = do
-    let ctx' = castPtr ctx
-    rand_str <- T.encodeUtf8 . T.pack . show <$> getStdRandom (randomR (1 :: Integer, 99999999))
-    [C.exp|int { duk_is_function($(void* ctx'), -1) } |] >>= \case
+  entry f = do
+    ctx' <- castPtr <$> asks dceCtx
+    rand_str <- liftIO $ T.encodeUtf8 . T.pack . show <$> getStdRandom (randomR (1 :: Integer, 99999999))
+    isFunc <- liftIO [C.exp|int { duk_is_function($(void* ctx'), -1) } |]
+    case isFunc of
       1 -> do
-        [C.exp| void { duk_put_global_lstring($(void* ctx'), $bs-ptr:rand_str, $bs-len:rand_str) }|]
+        liftIO $ [C.exp| void { duk_put_global_lstring($(void* ctx'), $bs-ptr:rand_str, $bs-len:rand_str) }|]
         let cb = MkJSCallback . T.decodeUtf8 $ rand_str
-        print cb
-        entry (f cb) ctx
+        liftIO $ print cb
+        entry (f cb)
       _ -> return $ [C.pure| int {DUK_RET_TYPE_ERROR}|]
 
 pushVal :: DuktapeCtx -> Value -> IO ()
