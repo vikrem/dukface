@@ -4,6 +4,8 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeFamilyDependencies #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE InterruptibleFFI #-}
 
 module Lib where
     -- ( someFunc
@@ -30,6 +32,7 @@ import Control.Concurrent.Async
 
 import GHC.TypeLits
 import Data.Proxy
+import System.Random
 
 import Data.Aeson
 import qualified Data.Vector as V
@@ -40,7 +43,8 @@ C.include "duktape.h"
 
 data DuktapeHeap
 type DuktapeCtx = Ptr DuktapeHeap
-data JSCallback -- TODO
+
+newtype JSCallback a = MkJSCallback { jsCallbackKey :: T.Text } deriving Show
 
 data DukType =
     DukNone
@@ -122,8 +126,17 @@ instance (FromJSON a, KnownNat (Arity (a -> v)), Dukkable v) => Dukkable (a -> v
        Nothing -> return $ [C.pure| int {DUK_RET_TYPE_ERROR}|]
        Just val -> entry (f val) ctx
 
--- instance (Dukkable r) => Dukkable (a -> r) where
---   entry _ = return 0
+instance {-# OVERLAPS #-} (KnownNat (Arity ((JSCallback a) -> v)), Dukkable v) => Dukkable (JSCallback a -> v) where
+  entry f ctx = do
+    let ctx' = castPtr ctx
+    rand_str <- T.encodeUtf8 . T.pack . show <$> getStdRandom (randomR (1 :: Integer, 99999999))
+    [C.exp|int { duk_is_function($(void* ctx'), -1) } |] >>= \case
+      1 -> do
+        [C.exp| void { duk_put_global_lstring($(void* ctx'), $bs-ptr:rand_str, $bs-len:rand_str) }|]
+        let cb = MkJSCallback . T.decodeUtf8 $ rand_str
+        print cb
+        entry (f cb) ctx
+      _ -> return $ [C.pure| int {DUK_RET_TYPE_ERROR}|]
 
 pushVal :: DuktapeCtx -> Value -> IO ()
 pushVal ctx Null = let ctx' = castPtr ctx in [C.exp|void { duk_push_null($(void* ctx'))} |]
