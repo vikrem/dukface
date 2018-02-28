@@ -87,7 +87,7 @@ runDuk dk = do
     Just e -> throwM e >> return ret
     Nothing -> return ret
 
-execJS :: T.Text -> Duk String
+execJS :: FromJSON v => T.Text -> Duk v
 execJS code = do
   ctx' <- castPtr <$> gets ctx
   let bs = T.encodeUtf8 code
@@ -95,7 +95,10 @@ execJS code = do
     duk_peval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs);
     return duk_to_string($(void* ctx'), -1);
   }|]
-  lift $ peekCString pArr
+  s <- liftIO $ BS.packCString pArr
+  case eitherDecode $ BSL.fromStrict s of
+    Left err -> throwString err
+    Right v -> return v
 
 injectFunc :: Dukkable f => f -> T.Text -> Duk ()
 injectFunc fn name = do
