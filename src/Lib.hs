@@ -230,8 +230,9 @@ instance (ToJSON b, DukCallable a, KnownNat (Arity (b -> a))) => DukCallable (b 
         liftIO $ pushVal ctx $ toJSON b
       nextCb = MkJSCallback name :: JSCallback a
 
-evalCallback' :: (KnownNat (Arity a), DukCallable a) => Proxy (Arity a) -> JSCallback a -> CBExpand a
-evalCallback' p cb = evalCallback cb (fromInteger $ natVal p) (pure ())
+evalCallback' :: forall a. (KnownNat (Arity a), DukCallable a) => JSCallback a -> CBExpand a
+evalCallback' cb = evalCallback cb (fromInteger $ natVal p) (pure ())
+  where p = Proxy :: Proxy (Arity a)
 
 pushVal :: DuktapeCtx -> Value -> IO ()
 pushVal ctx Null = let ctx' = castPtr ctx in [C.exp|void { duk_push_null($(void* ctx'))} |]
