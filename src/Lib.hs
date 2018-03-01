@@ -59,11 +59,30 @@ data DukType =
   -- | DukPointer
   -- | DukLightFunc
 
-data DukEnv = DukEnv { ctx :: DuktapeCtx, main :: ThreadId, gc :: IO (), exc :: MVar SomeException  }
-data DukCallEnv = DukCallEnv { dceCtx :: DuktapeCtx, dceExc :: MVar SomeException }
+-- Top level Duk execution env
+data DukEnv = DukEnv {
+  ctx :: DuktapeCtx,
+  main :: ThreadId,
+  gc :: IO (),
+  exc :: MVar SomeException,
+  tasks :: MVar [Task ()]
+  }
 
+-- Environment for HS callbacks and scheduled tasks
+data DukCallEnv = DukCallEnv {
+  dceCtx :: DuktapeCtx,
+  dceExc :: MVar SomeException,
+  dceTasks :: MVar [Task ()]
+  }
+
+data JSCall = JSCall
+-- Duk a executes a script and returns the last value of the last task, a
 type Duk a = StateT DukEnv IO a
+
+-- DukCall a is a Haskell function that returns a value of a to JS
 type DukCall a = ReaderT DukCallEnv IO a
+-- Also used for re-entry tasks
+type Task a = DukCall a
 
 type family Arity a :: Nat where
   Arity (r -> a) = 1 + Arity a
@@ -78,10 +97,11 @@ runDuk :: Duk a -> IO a
 runDuk dk = do
   me <- myThreadId
   excBox <- newEmptyMVar
+  taskQ <- newEmptyMVar
   (ret, newE) <- bracket
     ((castPtr <$> [C.exp| void* {duk_create_heap_default()}|]) :: IO DuktapeCtx)
     cleanup
-    (\ctx -> runStateT dk $ DukEnv ctx me (pure ()) excBox)
+    (\ctx -> runStateT dk $ DukEnv ctx me (pure ()) excBox taskQ)
   gc newE
   tryReadMVar excBox >>= \case
     Just e -> throwM e >> return ret
@@ -109,8 +129,9 @@ injectFunc fn name = do
   ctx <- gets ctx
   let ctx' = castPtr ctx
   excBox <- gets exc
+  taskQ <- gets tasks
   let name' = T.encodeUtf8 name
-  let runFunc = runReaderT (entry fn) (DukCallEnv ctx excBox) `catchAny` \(e :: SomeException) -> do
+  let runFunc = runReaderT (entry fn) (DukCallEnv ctx excBox taskQ) `catchAny` \(e :: SomeException) -> do
         void $ tryPutMVar excBox e
         return $ [C.pure| int {DUK_RET_EVAL_ERROR}|]
   wrappedFunc <- liftIO $ $(C.mkFunPtr [t|Ptr () -> IO C.CInt|]) $ const runFunc
@@ -132,8 +153,15 @@ class KnownNat (Arity f) => Dukkable f where
 instance Dukkable () where
   entry _ = do { ctx <- asks dceCtx; liftIO $ pushVal ctx Null; return 1}
 
-instance {-# OVERLAPS #-} (ToJSON v, KnownNat (Arity v)) => Dukkable v where
-  entry val = do { ctx <- asks dceCtx; liftIO $ pushVal ctx (toJSON val); return 1 }
+instance {-# OVERLAPS #-} (ToJSON v, KnownNat (Arity v)) => Dukkable (DukCall v) where
+  entry act = do
+    val <- act
+    ctx <- asks dceCtx
+    liftIO $ pushVal ctx (toJSON val)
+    return 1
+
+-- instance {-# OVERLAPS #-} (ToJSON v, KnownNat (Arity v)) => Dukkable v where
+--   entry val = do { ctx <- asks dceCtx; liftIO $ pushVal ctx (toJSON val); return 1 }
 
 instance (FromJSON a, KnownNat (Arity (a -> v)), Dukkable v) => Dukkable (a -> v) where
   entry f = do
@@ -159,6 +187,47 @@ instance {-# OVERLAPS #-} (KnownNat (Arity ((JSCallback a) -> v)), Dukkable v) =
         liftIO $ print cb
         entry (f cb)
       _ -> return $ [C.pure| int {DUK_RET_TYPE_ERROR}|]
+
+class (KnownNat (Arity a)) => DukCallable a r | a -> r where
+  evalCallback :: JSCallback a -> DukCall () -> r
+  makeCall :: JSCallback a -> DukCall C.CInt
+  makeCall (MkJSCallback name) = do
+    ctx <- castPtr <$> asks dceCtx
+    let name' = T.encodeUtf8 name
+    let arity' = fromInteger $ natVal (Proxy :: Proxy (Arity a))
+    liftIO $ [C.block| int {
+                        duk_get_global_lstring($(void* ctx), $bs-ptr:name', $bs-len:name');
+                        duk_push_null($(void* ctx));
+                        duk_put_global_lstring($(void* ctx), $bs-ptr:name', $bs-len:name');
+                        return duk_pcall($(void* ctx), $(int arity'));
+      } |]
+
+instance {-# OVERLAPPABLE #-}(FromJSON a, KnownNat (Arity a)) => DukCallable a (DukCall a) where
+  evalCallback cb accum = do
+    accum
+    void $ makeCall cb
+    ctx' <- castPtr <$> asks dceCtx
+    pArr <- lift $ [C.block| const char* {
+      return duk_safe_to_string($(void* ctx'), -1);
+    }|]
+    s <- liftIO $ BS.packCString pArr
+    case eitherDecode $ BSL.fromStrict s of
+      Left err -> throwString err
+      Right v -> return v
+
+instance {-# OVERLAPS #-} (ToJSON b, KnownNat (Arity (b -> a)), DukCallable a r', r ~ (b -> r')) => DukCallable (b -> a) r where
+  evalCallback (MkJSCallback name) accum b = evalCallback nextCb accum'
+    where
+      accum' = do
+        accum
+        ctx <- asks dceCtx
+        liftIO $ pushVal ctx $ toJSON b
+      nextCb = MkJSCallback name :: JSCallback a
+
+
+-- instance (HeadArg (r -> v) ~ r, HeadArg r ~ r, ToJSON r, KnownNat (Arity (r -> v)), DukCallable v) => DukCallable (r -> v) where
+--   pushArgs _ v ctx = liftIO $ pushVal ctx $ toJSON v
+--   evalCallback jsc = undefined
 
 pushVal :: DuktapeCtx -> Value -> IO ()
 pushVal ctx Null = let ctx' = castPtr ctx in [C.exp|void { duk_push_null($(void* ctx'))} |]
