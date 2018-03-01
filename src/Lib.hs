@@ -67,14 +67,14 @@ data DukEnv = DukEnv {
   main :: ThreadId,
   gc :: IO (),
   exc :: MVar SomeException,
-  tasks :: MVar [Task ()]
+  tasks :: MVar (Task ())
   }
 
 -- Environment for HS callbacks and scheduled tasks
 data DukCallEnv = DukCallEnv {
   dceCtx :: DuktapeCtx,
   dceExc :: MVar SomeException,
-  dceTasks :: MVar [Task ()]
+  dceTasks :: MVar (Task ())
   }
 
 data JSCall = JSCall
@@ -103,7 +103,14 @@ runDuk dk = do
   (ret, newE) <- bracket
     ((castPtr <$> [C.exp| void* {duk_create_heap_default()}|]) :: IO DuktapeCtx)
     cleanup
-    (\ctx -> runStateT dk $ DukEnv ctx me (pure ()) excBox taskQ)
+    (\ctx -> do
+        retme <- runStateT dk $ DukEnv ctx me (pure ()) excBox taskQ
+        let loop = do
+              t <- takeMVar taskQ
+              runReaderT t $ DukCallEnv ctx excBox taskQ
+        loop
+        return retme
+    )
   gc newE
   tryReadMVar excBox >>= \case
     Just e -> throwM e >> return ret
@@ -144,6 +151,17 @@ injectFunc fn name = do
   modify $ \e -> e {gc = freeHaskellFunPtr wrappedFunc >> oldGc}
   pure ()
 
+
+addEvent :: DukCall (DukCall a) -> DukCall ()
+addEvent dc = do
+  env <- ask
+  tasks <- asks dceTasks
+  excBox <- asks dceExc
+  void $ liftIO $ async $ (do
+      ret <- runReaderT dc env
+      void $ putMVar tasks $ void ret)
+    `catchAny` \(e :: SomeException) -> void $ tryPutMVar excBox e
+
 class KnownNat (Arity f) => Dukkable f where
   getArgs :: KnownNat (Arity f) => f -> Integer
   getArgs _ = natVal (Proxy :: Proxy (Arity f))
@@ -182,7 +200,6 @@ instance {-# OVERLAPS #-} (KnownNat (Arity ((JSCallback a) -> v)), Dukkable v) =
         let cb = MkJSCallback . T.decodeUtf8 $ rand_str
         liftIO $ print cb
         entry (f cb)
-        return 0
       _ -> return $ [C.pure| int {DUK_RET_TYPE_ERROR}|]
 
 class (KnownNat (Arity a)) => DukCallable a where
@@ -226,7 +243,6 @@ instance (ToJSON b, DukCallable a, KnownNat (Arity (b -> a))) => DukCallable (b 
       accum' = do
         accum
         ctx <- asks dceCtx
-        liftIO $ print "pushing val"
         liftIO $ pushVal ctx $ toJSON b
       nextCb = MkJSCallback name :: JSCallback a
 
