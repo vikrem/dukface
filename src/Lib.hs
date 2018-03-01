@@ -6,6 +6,7 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE InterruptibleFFI #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Lib where
     -- ( someFunc
@@ -115,10 +116,7 @@ execJS code = do
   lift $ when (errCode /= 0) $ do
     err <- [C.exp| const char* { duk_safe_to_string($(void* ctx'), -1) }|]
     peekCString err >>= throwString
-  pArr <- lift $ [C.block| const char* {
-    duk_peval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs);
-    return duk_safe_to_string($(void* ctx'), -1);
-  }|]
+  pArr <- lift $ [C.exp| const char* {duk_safe_to_string($(void* ctx'), -1)}|]
   s <- liftIO $ BS.packCString pArr
   case eitherDecode $ BSL.fromStrict s of
     Left err -> throwString err
@@ -160,9 +158,6 @@ instance {-# OVERLAPS #-} (ToJSON v, KnownNat (Arity v)) => Dukkable (DukCall v)
     liftIO $ pushVal ctx (toJSON val)
     return 1
 
--- instance {-# OVERLAPS #-} (ToJSON v, KnownNat (Arity v)) => Dukkable v where
---   entry val = do { ctx <- asks dceCtx; liftIO $ pushVal ctx (toJSON val); return 1 }
-
 instance (FromJSON a, KnownNat (Arity (a -> v)), Dukkable v) => Dukkable (a -> v) where
   entry f = do
     ctx' <- castPtr <$> asks dceCtx
@@ -186,26 +181,35 @@ instance {-# OVERLAPS #-} (KnownNat (Arity ((JSCallback a) -> v)), Dukkable v) =
         let cb = MkJSCallback . T.decodeUtf8 $ rand_str
         liftIO $ print cb
         entry (f cb)
+        return 0
       _ -> return $ [C.pure| int {DUK_RET_TYPE_ERROR}|]
 
-class (KnownNat (Arity a)) => DukCallable a r | a -> r where
-  evalCallback :: JSCallback a -> DukCall () -> r
-  makeCall :: JSCallback a -> DukCall C.CInt
-  makeCall (MkJSCallback name) = do
+class (KnownNat (Arity a)) => DukCallable a where
+  evalCallback :: JSCallback a -> C.CInt -> DukCall () -> CBExpand a
+  makeCall :: JSCallback a -> C.CInt -> DukCall C.CInt
+  makeCall (MkJSCallback name) arity = do
     ctx <- castPtr <$> asks dceCtx
     let name' = T.encodeUtf8 name
-    let arity' = fromInteger $ natVal (Proxy :: Proxy (Arity a))
+    liftIO $ print $ "evaling with arity " ++ show arity
+    -- Stack order:
+    -- <- Bottom , func , arg1, arg2, argn | TOP
     liftIO $ [C.block| int {
                         duk_get_global_lstring($(void* ctx), $bs-ptr:name', $bs-len:name');
+                        duk_insert($(void *ctx), -$(int arity) - 1);
+                        duk_ret_t ret = duk_pcall($(void* ctx), $(int arity));
                         duk_push_null($(void* ctx));
                         duk_put_global_lstring($(void* ctx), $bs-ptr:name', $bs-len:name');
-                        return duk_pcall($(void* ctx), $(int arity'));
+                        return ret;
       } |]
 
-instance {-# OVERLAPPABLE #-}(FromJSON a, KnownNat (Arity a)) => DukCallable a (DukCall a) where
-  evalCallback cb accum = do
+type family CBExpand a where
+  CBExpand (a -> b) = a -> CBExpand b
+  CBExpand a = DukCall a
+
+instance {-# OVERLAPPABLE #-} (FromJSON a, KnownNat (Arity a), CBExpand a ~ DukCall a) => DukCallable a where
+  evalCallback cb ar accum = do
     accum
-    void $ makeCall cb
+    void $ makeCall cb ar
     ctx' <- castPtr <$> asks dceCtx
     pArr <- lift $ [C.block| const char* {
       return duk_safe_to_string($(void* ctx'), -1);
@@ -215,19 +219,15 @@ instance {-# OVERLAPPABLE #-}(FromJSON a, KnownNat (Arity a)) => DukCallable a (
       Left err -> throwString err
       Right v -> return v
 
-instance {-# OVERLAPS #-} (ToJSON b, KnownNat (Arity (b -> a)), DukCallable a r', r ~ (b -> r')) => DukCallable (b -> a) r where
-  evalCallback (MkJSCallback name) accum b = evalCallback nextCb accum'
+instance (ToJSON b, DukCallable a, KnownNat (Arity (b -> a))) => DukCallable (b -> a) where
+  evalCallback (MkJSCallback name) ar accum b = evalCallback nextCb ar accum'
     where
       accum' = do
         accum
         ctx <- asks dceCtx
+        liftIO $ print "pushing val"
         liftIO $ pushVal ctx $ toJSON b
       nextCb = MkJSCallback name :: JSCallback a
-
-
--- instance (HeadArg (r -> v) ~ r, HeadArg r ~ r, ToJSON r, KnownNat (Arity (r -> v)), DukCallable v) => DukCallable (r -> v) where
---   pushArgs _ v ctx = liftIO $ pushVal ctx $ toJSON v
---   evalCallback jsc = undefined
 
 pushVal :: DuktapeCtx -> Value -> IO ()
 pushVal ctx Null = let ctx' = castPtr ctx in [C.exp|void { duk_push_null($(void* ctx'))} |]
