@@ -7,6 +7,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE InterruptibleFFI #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Lib where
     -- ( someFunc
@@ -228,6 +229,9 @@ instance (ToJSON b, DukCallable a, KnownNat (Arity (b -> a))) => DukCallable (b 
         liftIO $ print "pushing val"
         liftIO $ pushVal ctx $ toJSON b
       nextCb = MkJSCallback name :: JSCallback a
+
+evalCallback' :: (KnownNat (Arity a), DukCallable a) => Proxy (Arity a) -> JSCallback a -> CBExpand a
+evalCallback' p cb = evalCallback cb (fromInteger $ natVal p) (pure ())
 
 pushVal :: DuktapeCtx -> Value -> IO ()
 pushVal ctx Null = let ctx' = castPtr ctx in [C.exp|void { duk_push_null($(void* ctx'))} |]
