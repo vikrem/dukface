@@ -83,8 +83,12 @@ test-suite tests
     type: exitcode-stdio-1.0
     build-depends:
         base >= 4.3 && < 5
+      , aeson
+      , smallcheck
       , tasty
       , tasty-hunit
+      , tasty-smallcheck
+      , text
       , dukface
 
 source-repository head

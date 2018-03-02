@@ -64,7 +64,7 @@ data DukType =
 -- Top level Duk execution env
 data DukEnv = DukEnv {
   ctx :: DuktapeCtx,
-  main :: ThreadId,
+  mainThread :: ThreadId,
   gc :: IO (),
   exc :: MVar SomeException,
   tasks :: MVar (Task ())
@@ -95,6 +95,14 @@ cleanup ctx = [C.exp| void { duk_destroy_heap($(void* ctx')) }|]
   where
    ctx' = castPtr ctx
 
+-- Promote a nested JS execution action to an action in the JS main thread
+dukLift :: DukCall a -> Duk a
+dukLift dc = do
+  ctx <- gets ctx
+  excBox <- gets exc
+  tasks <- gets tasks
+  liftIO $ runReaderT dc $ DukCallEnv ctx excBox tasks
+
 runDuk :: Duk a -> IO a
 runDuk dk = do
   me <- myThreadId
@@ -105,10 +113,10 @@ runDuk dk = do
     cleanup
     (\ctx -> do
         retme <- runStateT dk $ DukEnv ctx me (pure ()) excBox taskQ
-        let loop = do
-              t <- takeMVar taskQ
-              runReaderT t $ DukCallEnv ctx excBox taskQ
-        loop
+        -- let loop = do
+        --       t <- takeMVar taskQ
+        --       runReaderT t $ DukCallEnv ctx excBox taskQ
+        -- loop
         return retme
     )
   gc newE
@@ -116,9 +124,9 @@ runDuk dk = do
     Just e -> throwM e >> return ret
     Nothing -> return ret
 
-execJS :: FromJSON v => T.Text -> Duk v
+execJS :: FromJSON v => T.Text -> DukCall v
 execJS code = do
-  ctx' <- castPtr <$> gets ctx
+  ctx' <- castPtr <$> asks dceCtx
   let bs = T.encodeUtf8 code
   errCode <- lift $ [C.exp| int {duk_peval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs)}|]
   lift $ when (errCode /= 0) $ do
@@ -127,7 +135,7 @@ execJS code = do
   pArr <- lift $ [C.exp| const char* {duk_safe_to_string($(void* ctx'), -1)}|]
   s <- liftIO $ BS.packCString pArr
   case eitherDecode $ BSL.fromStrict s of
-    Left err -> throwString err
+    Left err -> throwString $ err ++ " # trying to parse: " ++ (T.unpack . T.decodeUtf8 $ s)
     Right v -> return v
 
 injectFunc :: Dukkable f => f -> T.Text -> Duk ()
@@ -166,9 +174,6 @@ class KnownNat (Arity f) => Dukkable f where
   getArgs :: KnownNat (Arity f) => f -> Integer
   getArgs _ = natVal (Proxy :: Proxy (Arity f))
   entry :: f -> DukCall C.CInt
-
-instance Dukkable () where
-  entry _ = do { ctx <- asks dceCtx; liftIO $ pushVal ctx Null; return 1}
 
 instance {-# OVERLAPS #-} (ToJSON v, KnownNat (Arity v)) => Dukkable (DukCall v) where
   entry act = do
