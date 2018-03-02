@@ -17,6 +17,8 @@ extra-source-files:
   vendor/duktape/src/duktape.c
   vendor/duktape/src/duktape.h
   vendor/duktape/src/duk_config.h
+  c-src/interrupt.c
+  c-src/interrupt.h
 tested-with:
   GHC == 8.2.2
 
@@ -37,11 +39,11 @@ library
                      , random
   default-language:    Haskell2010
   ghc-options: -Wall
-  c-sources: vendor/duktape/src/duktape.c
-  include-dirs: vendor/duktape/src
-  includes: duktape.h
-  install-includes: duktape.h
-  cc-options: -Wall -Wno-ignored-qualifiers -std=c99 -fstrict-aliasing -fomit-frame-pointer
+  c-sources: vendor/duktape/src/duktape.c c-src/interrupt.c
+  include-dirs: vendor/duktape/src c-src/
+  includes: duktape.h interrupt.h
+  install-includes: duktape.h interrupt.h
+  cc-options: -Wall -Wno-ignored-qualifiers -std=c99 -fstrict-aliasing -fomit-frame-pointer -O2
   default-extensions: BangPatterns
                     , ConstraintKinds
                     , DataKinds

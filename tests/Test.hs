@@ -38,7 +38,11 @@ tests :: TestTree
 tests =
   testGroup "All Tests"
   [
-    testGroup "Object identity"
+    testGroup "Monad laws"
+    [
+      monadLaw
+    ]
+  , testGroup "Object identity"
     [ testRefl $ Proxy @Int
     , testRefl $ Proxy @Double
     , testRefl $ Proxy @Value

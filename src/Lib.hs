@@ -13,7 +13,10 @@ module Lib where
     -- ( someFunc
     -- ) where
 
-import qualified Language.C.Inline as C
+import qualified Language.C.Inline.Interruptible as C
+import qualified Language.C.Inline.Context as C
+import qualified Language.C.Inline as C (context, include, mkFunPtr)
+import qualified Foreign.C.Types as C
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
@@ -47,6 +50,7 @@ import qualified Data.HashMap.Strict as HMS
 
 C.context (C.baseCtx <> C.funCtx <> C.fptrCtx <> C.bsCtx)
 C.include "duktape.h"
+C.include "interrupt.h"
 
 data DuktapeHeap
 type DuktapeCtx = Ptr DuktapeHeap
@@ -110,8 +114,10 @@ runDuk dk = do
   excBox <- newEmptyMVar
   taskQ <- newEmptyMVar
   fatalHandler <- $(C.mkFunPtr [t|Ptr () -> CString -> IO ()|]) fatalErr
+  async $ threadDelay 3000000 >> print "killing" >> killThread me
   (ret, newE) <- bracket
     (castPtr <$> [C.block| void* {
+        install_handler();
         return duk_create_heap(NULL, NULL, NULL, 0, $(void (*fatalHandler)(void*, const char*)) );
       }|])
     (\ptr -> cleanup ptr >> freeHaskellFunPtr fatalHandler)
@@ -135,7 +141,11 @@ execJS :: FromJSON v => T.Text -> DukCall v
 execJS code = do
   ctx' <- castPtr <$> asks dceCtx
   let bs = T.encodeUtf8 code
-  errCode <- lift $ [C.exp| int {duk_peval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs)}|]
+  errCode <- lift $ [C.block| int {
+                        if(!interrupted())
+                          return duk_peval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs);
+                        return 0;
+                        }|]
   lift $ when (errCode /= 0) $ do
     err <- [C.exp| const char* { duk_safe_to_string($(void* ctx'), -1) }|]
     peekCString err >>= throwString
