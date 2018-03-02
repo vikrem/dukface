@@ -84,11 +84,16 @@ test-suite tests
     build-depends:
         base >= 4.3 && < 5
       , aeson
+      , bytestring
+      , hashable
+      , scientific
       , smallcheck
       , tasty
       , tasty-hunit
       , tasty-smallcheck
       , text
+      , unordered-containers
+      , vector
       , dukface
 
 source-repository head

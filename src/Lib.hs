@@ -18,6 +18,7 @@ import qualified Language.C.Inline as C
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Text as T
+import qualified Data.Text.IO as T.IO
 import qualified Data.Text.Encoding as T
 import Foreign.Concurrent
 import Foreign.Ptr
@@ -108,9 +109,12 @@ runDuk dk = do
   me <- myThreadId
   excBox <- newEmptyMVar
   taskQ <- newEmptyMVar
+  fatalHandler <- $(C.mkFunPtr [t|Ptr () -> CString -> IO ()|]) fatalErr
   (ret, newE) <- bracket
-    ((castPtr <$> [C.exp| void* {duk_create_heap_default()}|]) :: IO DuktapeCtx)
-    cleanup
+    (castPtr <$> [C.block| void* {
+        return duk_create_heap(NULL, NULL, NULL, 0, $(void (*fatalHandler)(void*, const char*)) );
+      }|])
+    (\ptr -> cleanup ptr >> freeHaskellFunPtr fatalHandler)
     (\ctx -> do
         retme <- runStateT dk $ DukEnv ctx me (pure ()) excBox taskQ
         -- let loop = do
@@ -123,6 +127,9 @@ runDuk dk = do
   tryReadMVar excBox >>= \case
     Just e -> throwM e >> return ret
     Nothing -> return ret
+  where
+    fatalErr :: a -> CString -> IO ()
+    fatalErr _ msg = peekCString msg >>= \m -> T.IO.putStrLn $ "*** FATAL ERR IN DUKTAPE: " <> T.pack m
 
 execJS :: FromJSON v => T.Text -> DukCall v
 execJS code = do
@@ -132,7 +139,7 @@ execJS code = do
   lift $ when (errCode /= 0) $ do
     err <- [C.exp| const char* { duk_safe_to_string($(void* ctx'), -1) }|]
     peekCString err >>= throwString
-  pArr <- lift $ [C.exp| const char* {duk_safe_to_string($(void* ctx'), -1)}|]
+  pArr <- lift $ [C.exp| const char* {duk_json_encode($(void* ctx'), -1)}|]
   s <- liftIO $ BS.packCString pArr
   case eitherDecode $ BSL.fromStrict s of
     Left err -> throwString $ err ++ " # trying to parse: " ++ (T.unpack . T.decodeUtf8 $ s)
