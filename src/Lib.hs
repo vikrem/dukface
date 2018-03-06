@@ -72,14 +72,16 @@ data DukEnv = DukEnv {
   mainThread :: ThreadId,
   gc :: IO (),
   exc :: MVar SomeException,
-  tasks :: MVar (Task ())
+  tasks :: MVar (Task ()),
+  workers :: MVar Int
   }
 
 -- Environment for HS callbacks and scheduled tasks
 data DukCallEnv = DukCallEnv {
   dceCtx :: DuktapeCtx,
   dceExc :: MVar SomeException,
-  dceTasks :: MVar (Task ())
+  dceTasks :: MVar (Task ()),
+  dceWorkers :: MVar Int
   }
 
 data JSCall = JSCall
@@ -106,13 +108,15 @@ dukLift dc = do
   ctx <- gets ctx
   excBox <- gets exc
   tasks <- gets tasks
-  liftIO $ runReaderT dc $ DukCallEnv ctx excBox tasks
+  workers <- gets workers
+  liftIO $ runReaderT dc $ DukCallEnv ctx excBox tasks workers
 
 runDuk :: Duk a -> IO a
 runDuk dk = do
   me <- myThreadId
   excBox <- newEmptyMVar
   taskQ <- newEmptyMVar
+  numWorkers <- newMVar 0
   fatalHandler <- $(C.mkFunPtr [t|Ptr () -> CString -> IO ()|]) fatalErr
   --async $ threadDelay 3000000 >> print "killing" >> killThread me
   (ret, newE) <- bracket
@@ -122,11 +126,17 @@ runDuk dk = do
       }|])
     (\ptr -> cleanup ptr >> freeHaskellFunPtr fatalHandler)
     (\ctx -> do
-        retme <- runStateT dk $ DukEnv ctx me (pure ()) excBox taskQ
-        -- let loop = do
-        --       t <- takeMVar taskQ
-        --       runReaderT t $ DukCallEnv ctx excBox taskQ
-        -- loop
+        retme <- runStateT dk $ DukEnv ctx me (pure ()) excBox taskQ numWorkers
+        let loop = do
+              works <- readMVar numWorkers
+              case works of
+                0 -> pure ()
+                _ -> do
+                  t <- takeMVar taskQ
+                  runReaderT t $ DukCallEnv ctx excBox taskQ numWorkers
+                  void $ liftIO $ modifyMVar_ numWorkers (\n -> return $! (n - 1))
+                  loop
+        loop
         return retme
     )
   gc newE
@@ -161,8 +171,9 @@ injectFunc fn name = do
   let ctx' = castPtr ctx
   excBox <- gets exc
   taskQ <- gets tasks
+  numWorkers <- gets workers
   let name' = T.encodeUtf8 name
-  let runFunc = runReaderT (entry fn) (DukCallEnv ctx excBox taskQ) `catchAny` \(e :: SomeException) -> do
+  let runFunc = runReaderT (entry fn) (DukCallEnv ctx excBox taskQ numWorkers) `catchAny` \(e :: SomeException) -> do
         void $ tryPutMVar excBox e
         return $ [C.pure| int {DUK_RET_EVAL_ERROR}|]
   wrappedFunc <- liftIO $ $(C.mkFunPtr [t|Ptr () -> IO C.CInt|]) $ const runFunc
@@ -177,14 +188,18 @@ injectFunc fn name = do
   pure ()
 
 
-addEvent :: DukCall (DukCall a) -> DukCall ()
+addEvent :: DukCall (DukCall ()) -> DukCall ()
 addEvent dc = do
   env <- ask
   tasks <- asks dceTasks
   excBox <- asks dceExc
+  numworkers <- asks dceWorkers
+  void $ liftIO $ modifyMVar_ numworkers (\n -> do
+                                          return $! n + 1)
   void $ liftIO $ async $ (do
       ret <- runReaderT dc env
-      void $ putMVar tasks $ void ret)
+      void $ putMVar tasks ret
+                          )
     `catchAny` \(e :: SomeException) -> void $ tryPutMVar excBox e
 
 class KnownNat (Arity f) => Dukkable f where
@@ -220,7 +235,6 @@ instance {-# OVERLAPS #-} (KnownNat (Arity ((JSCallback a) -> v)), Dukkable v) =
       1 -> do
         liftIO $ [C.exp| void { duk_put_global_lstring($(void* ctx'), $bs-ptr:rand_str, $bs-len:rand_str) }|]
         let cb = MkJSCallback . T.decodeUtf8 $ rand_str
-        liftIO $ print cb
         entry (f cb)
       _ -> return $ [C.pure| int {DUK_RET_TYPE_ERROR}|]
 
@@ -230,7 +244,6 @@ class (KnownNat (Arity a)) => DukCallable a where
   makeCall (MkJSCallback name) arity = do
     ctx <- castPtr <$> asks dceCtx
     let name' = T.encodeUtf8 name
-    liftIO $ print $ "evaling with arity " ++ show arity
     -- Stack order:
     -- <- Bottom , func , arg1, arg2, argn | TOP
     liftIO $ [C.block| int {

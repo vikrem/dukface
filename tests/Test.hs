@@ -67,8 +67,10 @@ tests =
     ]
   , testCase "Person-object test" testPerson
   , testGroup "Callbacks"
-    [ testCase "Single callback" singleCallback
-    , testCase "Triple callback" tripleCallback
+    [ testCase "Single-arg callback" singleCallback
+    , testCase "Triple-arg callback" tripleCallback
+    , testCase "Callback to Haskell from Haskell via JS" hsCallback
+    , testCase "Callback to JS from Haskell worker" asyncCallback
     ]
   ]
 
@@ -150,3 +152,27 @@ tripleCallback = do
   where
     hsFunc :: IORef Int -> JSCallback (Int -> Int -> Int -> Int) -> DukCall Int
     hsFunc ref cb = evalCallback' cb 3 3 3 >>= \v -> liftIO (writeIORef ref v) >> return v
+
+hsCallback :: Assertion
+hsCallback = do
+  ref <- newIORef 0
+  let js = "f(g);"
+  _ <- runDuk $ do { injectFunc (f ref) "f"; injectFunc g "g"; dukLift $ execJS js } :: IO Int
+  v <- readIORef ref
+  v @?= 10
+  where
+    f :: IORef Int -> JSCallback (Int -> Int) -> DukCall Int
+    f ref cb = evalCallback' cb 5 >>= \v -> liftIO (writeIORef ref v) >> return v
+    g :: Int -> DukCall Int
+    g = return . (*) 2
+
+asyncCallback :: Assertion
+asyncCallback = do
+  ref <- newIORef 0
+  let js = "function getVal(){ return 11; } f(getVal);"
+  _ <- runDuk $ do { injectFunc (hsFunc ref) "f"; dukLift $ execJS js } :: IO ()
+  v <- readIORef ref
+  v @?= 11
+  where
+    hsFunc :: IORef Int -> JSCallback Int -> DukCall ()
+    hsFunc ref cb = evalCallback' cb >>= \v -> addEvent $ return (liftIO (writeIORef ref v) >> return ())
