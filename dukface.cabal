@@ -24,7 +24,7 @@ tested-with:
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Lib
+  exposed-modules:     Lib, Test
   build-depends:       base >= 4.7 && < 5
                      , inline-c
                      , mtl
@@ -79,7 +79,7 @@ library
                     , TypeOperators
 test-suite tests
     default-language: Haskell2010
-    ghc-options: -threaded -Wall
+    ghc-options: -threaded -Wall +RTS -N -RTS
     hs-source-dirs: tests
     main-is: Test.hs
     type: exitcode-stdio-1.0
@@ -90,6 +90,7 @@ test-suite tests
       , hashable
       , scientific
       , smallcheck
+      , mtl
       , tasty
       , tasty-hunit
       , tasty-smallcheck

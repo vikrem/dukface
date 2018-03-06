@@ -5,6 +5,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE DeriveGeneric #-}
 
 import Test.Tasty
 import Test.Tasty.HUnit
@@ -14,8 +15,12 @@ import Test.SmallCheck.Series
 import Data.Aeson.Types hiding (Series)
 import Data.Aeson hiding (Series)
 
+import Control.Monad.IO.Class
+
 import Data.Typeable
 import Data.Monoid
+import Data.String
+import Data.IORef
 
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -23,6 +28,7 @@ import qualified Data.Text.Encoding as T
 import Data.Proxy
 import Lib
 import GHC.Generics
+import GHC.TypeLits
 import Data.Scientific
 import Data.Hashable
 import qualified Data.HashMap.Strict as HMS
@@ -33,6 +39,16 @@ import qualified Data.ByteString.Lazy as BSL
 
 main :: IO ()
 main = defaultMain tests
+
+
+data Person = Person {
+  pName :: T.Text,
+  pAge :: Int,
+  pAddress :: Maybe T.Text
+  } deriving (Ord, Eq, Show, Generic)
+
+instance FromJSON Person
+instance ToJSON Person
 
 tests :: TestTree
 tests =
@@ -47,6 +63,12 @@ tests =
     , testRefl $ Proxy @Double
     , testRefl $ Proxy @Value
     , testRefl $ Proxy @T.Text
+    , testRefl $ Proxy @String
+    ]
+  , testCase "Person-object test" testPerson
+  , testGroup "Callbacks"
+    [ testCase "Single callback" singleCallback
+    , testCase "Triple callback" tripleCallback
     ]
   ]
 
@@ -75,7 +97,7 @@ instance Monad m => Serial m Scientific where
 
 instance Monad m => Serial m Value
 
-type CanGenRefl a = (Typeable a, Eq a, FromJSON a, ToJSON a, Serial IO a, Show a)
+type CanGenRefl a = (KnownNat (Arity a), Typeable a, Eq a, FromJSON a, ToJSON a, Serial IO a, Show a)
 
 testRefl :: forall a. CanGenRefl a => Proxy a -> TestTree
 testRefl Proxy = testProperty (typeName ++ "s can pass between HS and JS") $ typeRefl $ Proxy @a
@@ -86,8 +108,11 @@ typeRefl :: forall a. CanGenRefl a => Proxy a -> Property IO
 typeRefl _ = forAll $ \(x :: a) -> monadic $ do
     let jsSerial = (T.decodeUtf8 . BSL.toStrict . encode $ x)
     let evalStr = "(" <> jsSerial <> ")"
-    val <- runDuk $ dukLift $ execJS evalStr :: IO a
-    return $ val == x
+    let hsFunc = return x :: DukCall a
+    let callStr = "(f())"
+    direct_ref <- runDuk $ dukLift $ execJS evalStr :: IO a
+    direct_call <- runDuk $ do { injectFunc hsFunc "f"; dukLift $ execJS callStr} :: IO a
+    return $ and $ fmap (== x) [direct_ref, direct_call]
 
 monadLaw :: TestTree
 monadLaw = testProperty "monad return law" $
@@ -95,3 +120,33 @@ monadLaw = testProperty "monad return law" $
   forAll $ \(x :: Int) -> monadic $ do
     v <- runDuk $ return x
     return $ v == x
+
+testPerson :: Assertion
+testPerson = do
+  let p = Person "Bob" 50 Nothing
+  let jsSerial = (T.decodeUtf8 . BSL.toStrict . encode $ p)
+  let evalStr = "(" <> jsSerial <> ")"
+  val <- runDuk $ dukLift $ execJS evalStr :: IO Person
+  val @?= p
+
+singleCallback :: Assertion
+singleCallback = do
+  ref <- newIORef 0
+  let js = "function getVal(){ return 5; } f(getVal);"
+  _ <- runDuk $ do { injectFunc (hsFunc ref) "f"; dukLift $ execJS js } :: IO Int
+  v <- readIORef ref
+  v @?= 5
+  where
+    hsFunc :: IORef Int -> JSCallback Int -> DukCall Int
+    hsFunc ref cb = evalCallback' cb >>= \v -> liftIO (writeIORef ref v) >> return v
+
+tripleCallback :: Assertion
+tripleCallback = do
+  ref <- newIORef 0
+  let js = "function getVal(a, b, c){ return a * b * c; } f(getVal);"
+  _ <- runDuk $ do { injectFunc (hsFunc ref) "f"; dukLift $ execJS js } :: IO Int
+  v <- readIORef ref
+  v @?= 27
+  where
+    hsFunc :: IORef Int -> JSCallback (Int -> Int -> Int -> Int) -> DukCall Int
+    hsFunc ref cb = evalCallback' cb 3 3 3 >>= \v -> liftIO (writeIORef ref v) >> return v

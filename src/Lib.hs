@@ -114,7 +114,7 @@ runDuk dk = do
   excBox <- newEmptyMVar
   taskQ <- newEmptyMVar
   fatalHandler <- $(C.mkFunPtr [t|Ptr () -> CString -> IO ()|]) fatalErr
-  async $ threadDelay 3000000 >> print "killing" >> killThread me
+  --async $ threadDelay 3000000 >> print "killing" >> killThread me
   (ret, newE) <- bracket
     (castPtr <$> [C.block| void* {
         install_handler();
