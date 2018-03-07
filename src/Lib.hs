@@ -117,7 +117,7 @@ runDuk dk = do
   excBox <- newEmptyMVar
   taskQ <- newEmptyMVar
   numWorkers <- newMVar 0
-  fatalHandler <- $(C.mkFunPtr [t|Ptr () -> CString -> IO ()|]) fatalErr
+  fatalHandler <- $(C.mkFunPtr [t|Ptr () -> CString -> IO ()|]) $ fatalErr me
   --async $ threadDelay 3000000 >> print "killing" >> killThread me
   (ret, newE) <- bracket
     (castPtr <$> [C.block| void* {
@@ -144,8 +144,11 @@ runDuk dk = do
     Just e -> throwM e >> return ret
     Nothing -> return ret
   where
-    fatalErr :: a -> CString -> IO ()
-    fatalErr _ msg = peekCString msg >>= \m -> T.IO.putStrLn $ "*** FATAL ERR IN DUKTAPE: " <> T.pack m
+    fatalErr :: ThreadId -> a -> CString -> IO ()
+    --fatalErr victim _ msg = (peekCString msg >>= throwString) `catch` \(e :: SomeException) -> throwTo victim e
+    --fatalErr victim _ msg = (peekCString msg >>= throwString) `catch` \(e :: SomeException) -> throwTo victim e
+    -- TODO: get rethrow to work
+    fatalErr _ _ msg = peekCString msg >>= \m -> T.IO.putStrLn $ "*** FATAL ERR IN DUKTAPE: " <> T.pack m
 
 execJS :: FromJSON v => T.Text -> DukCall v
 execJS code = do

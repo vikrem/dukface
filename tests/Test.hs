@@ -1,3 +1,4 @@
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -7,6 +8,7 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE DeriveGeneric #-}
 
+import Protolude
 import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.SmallCheck
@@ -71,6 +73,8 @@ tests =
     , testCase "Triple-arg callback" tripleCallback
     , testCase "Callback to Haskell from Haskell via JS" hsCallback
     , testCase "Callback to JS from Haskell worker" asyncCallback
+    , testCase "Nested JS calls to Haskell worker" asyncNestedCallback
+    , testCase "Multiple concurrent Haskell workers" multipleWorkers
     ]
   ]
 
@@ -171,8 +175,43 @@ asyncCallback = do
   ref <- newIORef 0
   let js = "function getVal(){ return 11; } f(getVal);"
   _ <- runDuk $ do { injectFunc (hsFunc ref) "f"; dukLift $ execJS js } :: IO ()
-  v <- readIORef ref
-  v @?= 11
+  readIORef ref >>= (@=?) 11
+  _ <- runDuk $ do { injectFunc (hsFunc' ref) "f"; dukLift $ execJS js } :: IO ()
+  readIORef ref >>= (@=?) 11
   where
     hsFunc :: IORef Int -> JSCallback Int -> DukCall ()
-    hsFunc ref cb = evalCallback' cb >>= \v -> addEvent $ return (liftIO (writeIORef ref v) >> return ())
+    -- run the callback then return a value later
+    hsFunc ref cb = evalCallback' cb >>= \v -> addEvent $ return $ void $ liftIO (writeIORef ref v)
+    -- return a value later that runs the callback and returns a value
+    hsFunc' :: IORef Int -> JSCallback Int -> DukCall ()
+    hsFunc' ref cb = addEvent $ return $ do
+      v <- evalCallback' cb
+      liftIO $ writeIORef ref v
+      return ()
+
+asyncNestedCallback :: Assertion
+asyncNestedCallback = do
+  ref <- newIORef 0
+  let letters = T.singleton <$> ['a'..'z']
+  let injections = sequence $ injectFunc (hsFunc ref) <$> letters
+  let js = nest letters
+  _ <- runDuk $ do { void injections; dukLift $ execJS js } :: IO ()
+  readIORef ref >>= (@=?) 26
+  where
+    hsFunc :: IORef Int -> DukCall ()
+    -- run the callback then return a value later
+    hsFunc ref = addEvent $ return $ void $ liftIO (modifyIORef' ref (1 + ))
+    nest [] = ""
+    nest (x:xs) = x <> "(" <> nest xs <> ")"
+
+multipleWorkers :: Assertion
+multipleWorkers = do
+  refs <- replicateM 26 (newIORef 0)
+  let letters = T.singleton <$> ['a'..'z']
+  let injections = zipWithM (\c ref -> injectFunc (hsFunc ref) c) letters refs
+  let js = mconcat $ (<> "();") <$> letters
+  _ <- runDuk $ do { void injections; dukLift $ execJS js } :: IO ()
+  sequence_ $ (readIORef >=> (@=?) 1) <$> refs
+  where
+    hsFunc :: IORef Int -> DukCall ()
+    hsFunc ref = addEvent $ return $ void $ liftIO (modifyIORef' ref (1 + ))

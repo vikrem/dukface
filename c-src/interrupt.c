@@ -5,6 +5,7 @@
 #include <signal.h>
 
 static jmp_buf g_exc_handle;
+static struct sigaction g_old_sa;
 
 /*
   What does this do?
@@ -24,6 +25,7 @@ static jmp_buf g_exc_handle;
 void sigpipe_handle(int x) {
   /* fprintf(stderr, "Got signal %d\n", x); */
   /* fflush(stderr); */
+  (void) sigaction(SIGPIPE, &g_old_sa, NULL);
   longjmp(g_exc_handle, 1);
 }
 
@@ -31,7 +33,7 @@ void install_handler(void) {
   struct sigaction sa;
   sa.sa_handler = sigpipe_handle;
   sigemptyset(&sa.sa_mask);
-  (void) sigaction(SIGPIPE, &sa, NULL);
+  (void) sigaction(SIGPIPE, &sa, &g_old_sa);
 }
 
 int interrupted(void) {

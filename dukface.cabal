@@ -88,9 +88,10 @@ test-suite tests
       , aeson
       , bytestring
       , hashable
+      , mtl
+      , protolude
       , scientific
       , smallcheck
-      , mtl
       , tasty
       , tasty-hunit
       , tasty-smallcheck
