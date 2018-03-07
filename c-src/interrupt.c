@@ -1,11 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <setjmp.h>
-
+#include <pthread.h>
 #include <signal.h>
-
-static jmp_buf g_exc_handle;
-static struct sigaction g_old_sa;
+#include <errno.h>
 
 /*
   What does this do?
@@ -22,20 +20,30 @@ static struct sigaction g_old_sa;
   This then enables GHC to interrupt Duktape when an async exception is raised.
 */
 
+static __thread jmp_buf jmp;
+static __thread struct sigaction old_sa;
+
+void sigpipe_handle(int x);
+void install_handler(void);
+int enable_interrupt(void);
+void disable_interrupt(void);
+
 void sigpipe_handle(int x) {
-  /* fprintf(stderr, "Got signal %d\n", x); */
-  /* fflush(stderr); */
-  (void) sigaction(SIGPIPE, &g_old_sa, NULL);
-  longjmp(g_exc_handle, 1);
+  (void) longjmp(jmp, 1);
 }
 
 void install_handler(void) {
   struct sigaction sa;
   sa.sa_handler = sigpipe_handle;
   sigemptyset(&sa.sa_mask);
-  (void) sigaction(SIGPIPE, &sa, &g_old_sa);
+  (void) sigaction(SIGPIPE, &sa, NULL);
 }
 
-int interrupted(void) {
-  return setjmp(g_exc_handle);
+int enable_interrupt(void) {
+  install_handler();
+  return setjmp(jmp);
+}
+
+void disable_interrupt(void) {
+  (void) sigaction(SIGPIPE, &old_sa, NULL);
 }

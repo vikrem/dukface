@@ -146,17 +146,18 @@ runDuk dk = do
   where
     fatalErr :: ThreadId -> a -> CString -> IO ()
     --fatalErr victim _ msg = (peekCString msg >>= throwString) `catch` \(e :: SomeException) -> throwTo victim e
-    --fatalErr victim _ msg = (peekCString msg >>= throwString) `catch` \(e :: SomeException) -> throwTo victim e
+    fatalErr victim _ msg = (peekCString msg >>= throwString) `catch` \(e :: SomeException) -> throwTo victim e
     -- TODO: get rethrow to work
-    fatalErr _ _ msg = peekCString msg >>= \m -> T.IO.putStrLn $ "*** FATAL ERR IN DUKTAPE: " <> T.pack m
+    --fatalErr _ _ msg = peekCString msg >>= \m -> T.IO.putStrLn $ "*** FATAL ERR IN DUKTAPE: " <> T.pack m
 
 execJS :: FromJSON v => T.Text -> DukCall v
 execJS code = do
   ctx' <- castPtr <$> asks dceCtx
   let bs = T.encodeUtf8 code
   errCode <- lift $ [C.block| int {
-                        if(!interrupted())
+                        if(!enable_interrupt())
                           return duk_peval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs);
+                        disable_interrupt();
                         return 0;
                         }|]
   lift $ when (errCode /= 0) $ do
