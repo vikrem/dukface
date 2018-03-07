@@ -18,6 +18,7 @@ import Data.Aeson.Types hiding (Series)
 import Data.Aeson hiding (Series)
 
 import Control.Monad.IO.Class
+import Control.Exception.Safe
 
 import Data.Typeable
 import Data.Monoid
@@ -75,6 +76,10 @@ tests =
     , testCase "Callback to JS from Haskell worker" asyncCallback
     , testCase "Nested JS calls to Haskell worker" asyncNestedCallback
     , testCase "Multiple concurrent Haskell workers" multipleWorkers
+    ]
+  , testGroup "Exception handling and termination"
+    [ testCase "Can kill a long-running JS process" canKill
+    , testCase "Can capture the exception of a Haskell callback" canCatchCallbackExc
     ]
   ]
 
@@ -215,3 +220,21 @@ multipleWorkers = do
   where
     hsFunc :: IORef Int -> DukCall ()
     hsFunc ref = addEvent $ return $ void $ liftIO (modifyIORef' ref (1 + ))
+
+canKill :: Assertion
+canKill = do
+  let js = "for(;;){}"
+  (t :: Async ()) <- async $ runDuk $ dukLift $ execJS js
+  kill <- async $ threadDelay 1000000 >> cancel t
+  wait kill
+
+canCatchCallbackExc :: Assertion
+canCatchCallbackExc = do
+  _ <- runDuk $ do { injectFunc hsFunc "f"; dukLift $ execJS "f();" } :: IO ()
+  pure ()
+  where
+    hsFunc :: DukCall ()
+    hsFunc = throwString "wrry does this asplode" >> pure ()
+
+canKillMany :: Assertion
+canKillMany = undefined

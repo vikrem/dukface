@@ -78,6 +78,7 @@ data DukEnv = DukEnv {
 
 -- Environment for HS callbacks and scheduled tasks
 data DukCallEnv = DukCallEnv {
+  dceMain :: ThreadId,
   dceCtx :: DuktapeCtx,
   dceExc :: MVar SomeException,
   dceTasks :: MVar (Task ()),
@@ -105,11 +106,12 @@ cleanup ctx = [C.exp| void { duk_destroy_heap($(void* ctx')) }|]
 -- Promote a nested JS execution action to an action in the JS main thread
 dukLift :: DukCall a -> Duk a
 dukLift dc = do
+  main <- gets mainThread
   ctx <- gets ctx
   excBox <- gets exc
   tasks <- gets tasks
   workers <- gets workers
-  liftIO $ runReaderT dc $ DukCallEnv ctx excBox tasks workers
+  liftIO $ runReaderT dc $ DukCallEnv main ctx excBox tasks workers
 
 runDuk :: Duk a -> IO a
 runDuk dk = do
@@ -122,7 +124,8 @@ runDuk dk = do
   (ret, newE) <- bracket
     (castPtr <$> [C.block| void* {
         install_handler();
-        return duk_create_heap(NULL, NULL, NULL, 0, $(void (*fatalHandler)(void*, const char*)) );
+        return duk_create_heap(NULL, NULL, NULL, 0, &duktape_fatal_handler);
+        //return duk_create_heap(NULL, NULL, NULL, 0, $(void (*fatalHandler)(void*, const char*)) );
       }|])
     (\ptr -> cleanup ptr >> freeHaskellFunPtr fatalHandler)
     (\ctx -> do
@@ -133,7 +136,7 @@ runDuk dk = do
                 0 -> pure ()
                 _ -> do
                   t <- takeMVar taskQ
-                  runReaderT t $ DukCallEnv ctx excBox taskQ numWorkers
+                  runReaderT t $ DukCallEnv me ctx excBox taskQ numWorkers
                   void $ liftIO $ modifyMVar_ numWorkers (\n -> return $! (n - 1))
                   loop
         loop
@@ -146,7 +149,12 @@ runDuk dk = do
   where
     fatalErr :: ThreadId -> a -> CString -> IO ()
     --fatalErr victim _ msg = (peekCString msg >>= throwString) `catch` \(e :: SomeException) -> throwTo victim e
-    fatalErr victim _ msg = (peekCString msg >>= throwString) `catch` \(e :: SomeException) -> throwTo victim e
+    fatalErr victim _ msg = do
+      str <- peekCString msg
+      T.IO.putStrLn $ "*** Fatal error in duktape: " <> T.pack str
+      --[C.exp| void { force_interrupt() }|]
+      void $ forkOS $ (throwString str) `catch` \(e :: SomeException) -> throwTo victim e
+      -- wait assassin
     -- TODO: get rethrow to work
     --fatalErr _ _ msg = peekCString msg >>= \m -> T.IO.putStrLn $ "*** FATAL ERR IN DUKTAPE: " <> T.pack m
 
@@ -156,7 +164,9 @@ execJS code = do
   let bs = T.encodeUtf8 code
   errCode <- lift $ [C.block| int {
                         if(!enable_interrupt())
-                          return duk_peval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs);
+                        {
+                          duk_eval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs);
+                        }
                         disable_interrupt();
                         return 0;
                         }|]
@@ -173,11 +183,12 @@ injectFunc :: Dukkable f => f -> T.Text -> Duk ()
 injectFunc fn name = do
   ctx <- gets ctx
   let ctx' = castPtr ctx
+  main <- gets mainThread
   excBox <- gets exc
   taskQ <- gets tasks
   numWorkers <- gets workers
   let name' = T.encodeUtf8 name
-  let runFunc = runReaderT (entry fn) (DukCallEnv ctx excBox taskQ numWorkers) `catchAny` \(e :: SomeException) -> do
+  let runFunc = runReaderT (entry fn) (DukCallEnv main ctx excBox taskQ numWorkers) `catchAny` \(e :: SomeException) -> do
         void $ tryPutMVar excBox e
         return $ [C.pure| int {DUK_RET_EVAL_ERROR}|]
   wrappedFunc <- liftIO $ $(C.mkFunPtr [t|Ptr () -> IO C.CInt|]) $ const runFunc
