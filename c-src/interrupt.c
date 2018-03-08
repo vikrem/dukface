@@ -71,6 +71,6 @@ void force_interrupt(void) {
 }
 
 void duktape_fatal_handler(void* udata, const char* msg) {
-  fprintf(stderr, "\n** FATAL error in Duktape: %s. Forcing interrupt.\n", msg);
+  // fprintf(stderr, "\n** FATAL error in Duktape: %s. Forcing interrupt.\n", msg);
   force_interrupt();
 }

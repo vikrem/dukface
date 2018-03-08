@@ -19,6 +19,7 @@ import Data.Aeson hiding (Series)
 
 import Control.Monad.IO.Class
 import Control.Exception.Safe
+import Control.Concurrent.Async
 
 import Data.Typeable
 import Data.Monoid
@@ -57,29 +58,36 @@ tests :: TestTree
 tests =
   testGroup "All Tests"
   [
-    testGroup "Monad laws"
-    [
-      monadLaw
-    ]
-  , testGroup "Object identity"
-    [ testRefl $ Proxy @Int
-    , testRefl $ Proxy @Double
-    , testRefl $ Proxy @Value
-    , testRefl $ Proxy @T.Text
-    , testRefl $ Proxy @String
-    ]
-  , testCase "Person-object test" testPerson
-  , testGroup "Callbacks"
-    [ testCase "Single-arg callback" singleCallback
-    , testCase "Triple-arg callback" tripleCallback
-    , testCase "Callback to Haskell from Haskell via JS" hsCallback
-    , testCase "Callback to JS from Haskell worker" asyncCallback
-    , testCase "Nested JS calls to Haskell worker" asyncNestedCallback
-    , testCase "Multiple concurrent Haskell workers" multipleWorkers
-    ]
-  , testGroup "Exception handling and termination"
+  --   testGroup "Monad laws"
+  --   [
+  --     monadLaw
+  --   ]
+  -- , testGroup "Object identity"
+  --   [ testRefl $ Proxy @Int
+  --   , testRefl $ Proxy @Double
+  --   , testRefl $ Proxy @Value
+  --   , testRefl $ Proxy @T.Text
+  --   , testRefl $ Proxy @String
+  --   ]
+  -- , testCase "Person-object test" testPerson
+  -- , testGroup "Callbacks"
+  --   [ testCase "Single-arg callback" singleCallback
+  --   , testCase "Triple-arg callback" tripleCallback
+  --   , testCase "Callback to Haskell from Haskell via JS" hsCallback
+  --   , testCase "Callback to JS from Haskell worker" asyncCallback
+  --   , testCase "Nested JS calls to Haskell worker" asyncNestedCallback
+  --   , testCase "Multiple concurrent Haskell workers" multipleWorkers
+  --   ]
+    testGroup "Exception handling and termination"
     [ testCase "Can kill a long-running JS process" canKill
+    , testCase "Can kill multiple concurrent long-running JS processes" canKill
     , testCase "Can capture the exception of a Haskell callback" canCatchCallbackExc
+    , testCase "Can capture the exceptions of concurrent Haskell callbacks" canCatchManyCallbackExc
+    , testCase "Can capture the exceptions of Haskell workers" canCatchWorkerExc
+    , testCase "Can capture the exceptions of concurrent Haskell workers" canCatchManyWorkerExc
+    ]
+    , testGroup "Haskell workers"
+    [ testCase "Can use Haskell worker for setTimeout" setTimeoutTest
     ]
   ]
 
@@ -228,13 +236,52 @@ canKill = do
   kill <- async $ threadDelay 1000000 >> cancel t
   wait kill
 
+canKillMany :: Assertion
+canKillMany = do
+  let js = "for(;;){}"
+  (thds :: [Async ()]) <- replicateM 30 $ async $ runDuk $ dukLift $ execJS js
+  kill <- async $ threadDelay 1000000 >> sequence_ (cancel <$> thds)
+  wait kill
+
 canCatchCallbackExc :: Assertion
 canCatchCallbackExc = do
-  _ <- runDuk $ do { injectFunc hsFunc "f"; dukLift $ execJS "f();" } :: IO ()
-  pure ()
+  death <- newIORef False
+  _ :: () <- (runDuk $ do { injectFunc hsFunc "f"; dukLift $ execJS "f();" }) `catchDeep` \(e :: SomeException) -> do
+    let err = "Not the exception we were looking for!"
+    "wrry" `T.isInfixOf` T.pack (displayException e) @? err
+    "asplode" `T.isInfixOf` T.pack (displayException e) @? err
+    writeIORef death True
+  readIORef death >>= (@=?) True
   where
     hsFunc :: DukCall ()
     hsFunc = throwString "wrry does this asplode" >> pure ()
 
-canKillMany :: Assertion
-canKillMany = undefined
+canCatchManyCallbackExc :: Assertion
+canCatchManyCallbackExc = replicateConcurrently_ 100 canCatchCallbackExc
+
+canCatchWorkerExc :: Assertion
+canCatchWorkerExc = do
+  death <- newIORef False
+  _ :: () <- (runDuk $ do { injectFunc hsFunc "f"; dukLift $ execJS "function g(){}; f();" }) `catchDeep` \(e :: SomeException) -> do
+    let err = "Not the exception we were looking for!"
+    "wrry" `T.isInfixOf` T.pack (displayException e) @? err
+    "asplode" `T.isInfixOf` T.pack (displayException e) @? err
+    writeIORef death True
+  readIORef death >>= (@=?) True
+  where
+    hsFunc :: DukCall ()
+    hsFunc = addEvent $ return $ throwString "wrry does this asplode"
+
+canCatchManyWorkerExc :: Assertion
+canCatchManyWorkerExc = replicateConcurrently_ 100 canCatchWorkerExc
+
+setTimeoutTest :: Assertion
+setTimeoutTest = do
+  act <- newIORef False
+  _ :: () <- (runDuk $ do { injectFunc delay "f"; injectFunc (final act) "g"; dukLift $ execJS "f(g);" })
+  readIORef act >>= (@=?) True
+  where
+    delay :: JSCallback Int -> DukCall ()
+    delay cb = addEvent ( do { liftIO (threadDelay 1000000); return $ void $ evalCallback' cb })
+    final :: IORef Bool -> DukCall Int
+    final ref = void (liftIO $ writeIORef ref True) >> pure 0

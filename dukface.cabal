@@ -38,7 +38,7 @@ library
                      , unordered-containers
                      , random
   default-language:    Haskell2010
-  ghc-options: -Wall -debug
+  ghc-options: -Wall -O2
   c-sources: vendor/duktape/src/duktape.c c-src/interrupt.c
   include-dirs: vendor/duktape/src c-src/
   includes: duktape.h interrupt.h
@@ -79,13 +79,14 @@ library
                     , TypeOperators
 test-suite tests
     default-language: Haskell2010
-    ghc-options: -threaded -Wall -rtsopts -debug
+    ghc-options: -threaded -Wall -rtsopts -O2
     hs-source-dirs: tests
     main-is: Test.hs
     type: exitcode-stdio-1.0
     build-depends:
         base >= 4.3 && < 5
       , aeson
+      , async
       , bytestring
       , hashable
       , mtl
