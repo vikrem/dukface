@@ -119,15 +119,11 @@ runDuk dk = do
   excBox <- newEmptyMVar
   taskQ <- newEmptyMVar
   numWorkers <- newMVar 0
-  fatalHandler <- $(C.mkFunPtr [t|Ptr () -> CString -> IO ()|]) $ fatalErr me
-  --async $ threadDelay 3000000 >> print "killing" >> killThread me
   (ret, newE) <- bracket
     (castPtr <$> [C.block| void* {
-        install_handler();
         return duk_create_heap(NULL, NULL, NULL, 0, &duktape_fatal_handler);
-        //return duk_create_heap(NULL, NULL, NULL, 0, $(void (*fatalHandler)(void*, const char*)) );
       }|])
-    (\ptr -> cleanup ptr >> freeHaskellFunPtr fatalHandler)
+    (cleanup)
     (\ctx -> do
         retme <- runStateT dk $ DukEnv ctx me (pure ()) excBox taskQ numWorkers
         let loop = do
@@ -141,35 +137,30 @@ runDuk dk = do
                   loop
         loop
         return retme
-    )
+    ) `catch` \(e :: SomeException) -> do
+        tryReadMVar excBox >>= \case
+          Just e' -> throwM e' >> throwM e
+          Nothing -> throwM e
   gc newE
   tryReadMVar excBox >>= \case
     Just e -> throwM e >> return ret
     Nothing -> return ret
-  where
-    fatalErr :: ThreadId -> a -> CString -> IO ()
-    --fatalErr victim _ msg = (peekCString msg >>= throwString) `catch` \(e :: SomeException) -> throwTo victim e
-    fatalErr victim _ msg = do
-      str <- peekCString msg
-      T.IO.putStrLn $ "*** Fatal error in duktape: " <> T.pack str
-      --[C.exp| void { force_interrupt() }|]
-      void $ forkOS $ (throwString str) `catch` \(e :: SomeException) -> throwTo victim e
-      -- wait assassin
-    -- TODO: get rethrow to work
-    --fatalErr _ _ msg = peekCString msg >>= \m -> T.IO.putStrLn $ "*** FATAL ERR IN DUKTAPE: " <> T.pack m
 
 execJS :: FromJSON v => T.Text -> DukCall v
 execJS code = do
   ctx' <- castPtr <$> asks dceCtx
   let bs = T.encodeUtf8 code
   errCode <- lift $ [C.block| int {
-                        if(!enable_interrupt())
-                        {
-                          duk_eval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs);
-                        }
-                        disable_interrupt();
-                        return 0;
-                        }|]
+    install_handler();
+    volatile int ret = enable_interrupt();
+    if(!ret)
+    {
+      duk_eval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs);
+    } else {
+      return 1;
+    }
+    return 0;
+  }|]
   lift $ when (errCode /= 0) $ do
     err <- [C.exp| const char* { duk_safe_to_string($(void* ctx'), -1) }|]
     peekCString err >>= throwString
@@ -188,8 +179,8 @@ injectFunc fn name = do
   taskQ <- gets tasks
   numWorkers <- gets workers
   let name' = T.encodeUtf8 name
-  let runFunc = runReaderT (entry fn) (DukCallEnv main ctx excBox taskQ numWorkers) `catchAny` \(e :: SomeException) -> do
-        void $ tryPutMVar excBox e
+  let runFunc = runReaderT (entry fn) (DukCallEnv main ctx excBox taskQ numWorkers) `catchDeep` \(e :: SomeException) -> do
+        void $ putMVar excBox e
         return $ [C.pure| int {DUK_RET_EVAL_ERROR}|]
   wrappedFunc <- liftIO $ $(C.mkFunPtr [t|Ptr () -> IO C.CInt|]) $ const runFunc
   let numArgs = fromInteger $ getArgs fn
