@@ -21,24 +21,16 @@ import qualified Foreign.C.Types as C
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Text as T
-import qualified Data.Text.IO as T.IO
 import qualified Data.Text.Encoding as T
-import Foreign.Concurrent
 import Foreign.Ptr
-import Foreign.Storable
 import Foreign.C.String
-import Control.Concurrent.MVar
 import Data.Monoid
 
 import Control.Monad.State
-import Control.Monad.State.Class
 import Control.Monad.Reader
-import Control.Monad.Reader.Class
 import Control.Exception.Safe
 import Control.Concurrent hiding (throwTo)
 import Control.Concurrent.Async
-
-import Control.Concurrent.MVar
 
 import GHC.TypeLits
 import Data.Proxy
@@ -56,15 +48,6 @@ data DuktapeHeap
 type DuktapeCtx = Ptr DuktapeHeap
 
 newtype JSCallback a = MkJSCallback { jsCallbackKey :: T.Text } deriving Show
-
-data DukType =
-    DukNone
-  | DukUndefined
-  | DukNull
-  | DukJSON Value
-  -- | DukBuffer
-  -- | DukPointer
-  -- | DukLightFunc
 
 -- Top level Duk execution env
 data DukEnv = DukEnv {
