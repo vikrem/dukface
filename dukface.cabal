@@ -43,7 +43,7 @@ library
   include-dirs: vendor/duktape/src c-src/
   includes: duktape.h interrupt.h
   install-includes: duktape.h interrupt.h
-  cc-options: -Wall -O0 -g
+  cc-options: -Wall -O2
   default-extensions: BangPatterns
                     , ConstraintKinds
                     , DataKinds
@@ -79,7 +79,7 @@ library
                     , TypeOperators
 test-suite tests
     default-language: Haskell2010
-    ghc-options: -threaded -Wall -rtsopts -O2
+    ghc-options: -threaded -Wall -O2
     hs-source-dirs: tests
     main-is: Test.hs
     type: exitcode-stdio-1.0

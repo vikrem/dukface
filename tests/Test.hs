@@ -58,27 +58,27 @@ tests :: TestTree
 tests =
   testGroup "All Tests"
   [
-  --   testGroup "Monad laws"
-  --   [
-  --     monadLaw
-  --   ]
-  -- , testGroup "Object identity"
-  --   [ testRefl $ Proxy @Int
-  --   , testRefl $ Proxy @Double
-  --   , testRefl $ Proxy @Value
-  --   , testRefl $ Proxy @T.Text
-  --   , testRefl $ Proxy @String
-  --   ]
-  -- , testCase "Person-object test" testPerson
-  -- , testGroup "Callbacks"
-  --   [ testCase "Single-arg callback" singleCallback
-  --   , testCase "Triple-arg callback" tripleCallback
-  --   , testCase "Callback to Haskell from Haskell via JS" hsCallback
-  --   , testCase "Callback to JS from Haskell worker" asyncCallback
-  --   , testCase "Nested JS calls to Haskell worker" asyncNestedCallback
-  --   , testCase "Multiple concurrent Haskell workers" multipleWorkers
-  --   ]
-    testGroup "Exception handling and termination"
+      testGroup "Monad laws"
+    [
+      monadLaw
+    ]
+    , testGroup "Object identity"
+    [ testRefl $ Proxy @Int
+    , testRefl $ Proxy @Double
+    , testRefl $ Proxy @Value
+    , testRefl $ Proxy @T.Text
+    , testRefl $ Proxy @String
+    , testCase "Person-object test" testPerson
+    ]
+    , testGroup "Callbacks"
+    [ testCase "Single-arg callback" singleCallback
+    , testCase "Triple-arg callback" tripleCallback
+    , testCase "Callback to Haskell from Haskell via JS" hsCallback
+    , testCase "Callback to JS from Haskell worker" asyncCallback
+    , testCase "Nested JS calls to Haskell worker" asyncNestedCallback
+    , testCase "Multiple concurrent Haskell workers" multipleWorkers
+    ]
+    , testGroup "Exception handling and termination"
     [ testCase "Can kill a long-running JS process" canKill
     , testCase "Can kill multiple concurrent long-running JS processes" canKill
     , testCase "Can capture the exception of a Haskell callback" canCatchCallbackExc
