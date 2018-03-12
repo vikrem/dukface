@@ -25,7 +25,7 @@ import Data.IORef
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 
-import Lib
+import Dukface
 import Data.Scientific
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.Vector as V

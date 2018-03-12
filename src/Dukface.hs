@@ -9,9 +9,19 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RankNTypes #-}
 
-module Lib where
-    -- ( someFunc
-    -- ) where
+module Dukface
+  (
+    runDuk,
+    dukLift,
+    execJS,
+    injectFunc,
+    evalCallback,
+    JSCallback,
+    Duk,
+    DukCall,
+    addEvent,
+    Arity
+  ) where
 
 import qualified Language.C.Inline.Interruptible as C
 import qualified Language.C.Inline.Context as C
@@ -68,7 +78,6 @@ data DukCallEnv = DukCallEnv {
   dceWorkers :: MVar Int
   }
 
-data JSCall = JSCall
 -- Duk a executes a script and returns the last value of the last task, a
 type Duk a = StateT DukEnv IO a
 

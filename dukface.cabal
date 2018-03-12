@@ -24,7 +24,7 @@ tested-with:
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Lib
+  exposed-modules:     Dukface
   build-depends:       base >= 4.7 && < 5
                      , inline-c
                      , mtl
