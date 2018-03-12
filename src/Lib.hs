@@ -147,6 +147,10 @@ execJS code = do
   lift $ when (errCode /= 0) $ do
     err <- [C.exp| const char* { duk_safe_to_string($(void* ctx'), -1) }|]
     peekCString err >>= throwString
+  can_get_val <- lift $ [C.exp| int { duk_is_object_coercible($(void* ctx'), -1) || duk_is_null($(void* ctx'), -1) } |]
+  lift $ when (can_get_val /= 1) $ do
+    err <- [C.exp| const char* { duk_safe_to_string($(void* ctx'), -1) }|]
+    peekCString err >>= \e -> throwString $ "Value isn't object-coercible or null: " <> e
   pArr <- lift $ [C.exp| const char* {duk_json_encode($(void* ctx'), -1)}|]
   s <- liftIO $ BS.packCString pArr
   case eitherDecode $ BSL.fromStrict s of

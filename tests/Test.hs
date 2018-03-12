@@ -67,6 +67,7 @@ tests =
     , testCase "Can capture the exceptions of concurrent Haskell callbacks" canCatchManyCallbackExc
     , testCase "Can capture the exceptions of Haskell workers" canCatchWorkerExc
     , testCase "Can capture the exceptions of concurrent Haskell workers" canCatchManyWorkerExc
+    , testCase "Can catch unrepresentable data exceptions" canCatchBadcoercion
     ]
     , testGroup "Haskell workers"
     [ testCase "Can use Haskell worker for setTimeout" setTimeoutTest
@@ -283,3 +284,10 @@ setTimeoutTest = do
     delay cb = addEvent ( do { liftIO (threadDelay 1000000); return $ void $ evalCallback' cb })
     final :: IORef Bool -> DukCall Int
     final ref = void (liftIO $ writeIORef ref True) >> pure 0
+
+canCatchBadcoercion :: Assertion
+canCatchBadcoercion = do
+  let js = "undefined"
+  (runDuk $ dukLift $ execJS js) `catchDeep` \(e :: SomeException) -> do
+    let err = "Not the exception we were looking for!"
+    "coercible" `T.isInfixOf` T.pack (displayException e) @? (err <> " : " <> displayException e)
