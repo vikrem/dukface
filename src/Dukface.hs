@@ -149,7 +149,8 @@ execJS code = do
     }
     return 0;
   }|]
-  lift $ when (errCode /= 0) $ do
+  top_is_err <- liftIO $ [C.exp| int { duk_is_error($(void* ctx'), -1) }|]
+  lift $ when (errCode /= 0 || top_is_err /= 0) $ do
     err <- [C.exp| const char* { duk_safe_to_string($(void* ctx'), -1) }|]
     peekCString err >>= throwString
   can_get_val <- lift $ [C.exp| int { duk_is_object_coercible($(void* ctx'), -1) || duk_is_null($(void* ctx'), -1) } |]

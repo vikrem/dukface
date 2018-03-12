@@ -68,6 +68,7 @@ tests =
     , testCase "Can capture the exceptions of Haskell workers" canCatchWorkerExc
     , testCase "Can capture the exceptions of concurrent Haskell workers" canCatchManyWorkerExc
     , testCase "Can catch unrepresentable data exceptions" canCatchBadcoercion
+    , testCase "Can catch errors from JS" canCatchSourceErr
     ]
     , testGroup "Haskell workers"
     [ testCase "Can use Haskell worker for setTimeout" setTimeoutTest
@@ -291,3 +292,10 @@ canCatchBadcoercion = do
   (runDuk $ dukLift $ execJS js) `catchDeep` \(e :: SomeException) -> do
     let err = "Not the exception we were looking for!"
     "coercible" `T.isInfixOf` T.pack (displayException e) @? (err <> " : " <> displayException e)
+
+canCatchSourceErr :: Assertion
+canCatchSourceErr = do
+  death <- newIORef False
+  let js = "y this explod tho"
+  runDuk $ dukLift $ execJS js `catchDeep` \(_ :: SomeException) -> liftIO $ writeIORef death True
+  readIORef death >>= (@=?) True
