@@ -132,7 +132,7 @@ singleCallback = do
   v @?= 5
   where
     hsFunc :: IORef Int -> JSCallback Int -> DukCall Int
-    hsFunc ref cb = evalCallback' cb >>= \v -> liftIO (writeIORef ref v) >> return v
+    hsFunc ref cb = evalCallback cb >>= \v -> liftIO (writeIORef ref v) >> return v
 
 tripleCallback :: Assertion
 tripleCallback = do
@@ -143,7 +143,7 @@ tripleCallback = do
   v @?= 27
   where
     hsFunc :: IORef Int -> JSCallback (Int -> Int -> Int -> Int) -> DukCall Int
-    hsFunc ref cb = evalCallback' cb 3 3 3 >>= \v -> liftIO (writeIORef ref v) >> return v
+    hsFunc ref cb = evalCallback cb 3 3 3 >>= \v -> liftIO (writeIORef ref v) >> return v
 
 namedCallback :: Assertion
 namedCallback = do
@@ -158,7 +158,7 @@ namedCallback = do
   v @?= 27
   where
     hsFunc :: IORef Int -> JSCallback (Int -> Int -> Int -> Int) -> DukCall Int
-    hsFunc ref cb = evalCallback' cb 3 3 3 >>= \v -> liftIO (writeIORef ref v) >> return v
+    hsFunc ref cb = evalCallback cb 3 3 3 >>= \v -> liftIO (writeIORef ref v) >> return v
 
 namedCallbackExc :: Assertion
 namedCallbackExc =
@@ -178,7 +178,7 @@ hsCallback = do
   v @?= 10
   where
     f :: IORef Int -> JSCallback (Int -> Int) -> DukCall Int
-    f ref cb = evalCallback' cb 5 >>= \v -> liftIO (writeIORef ref v) >> return v
+    f ref cb = evalCallback cb 5 >>= \v -> liftIO (writeIORef ref v) >> return v
     g :: Int -> DukCall Int
     g = return . (*) 2
 
@@ -193,11 +193,11 @@ asyncCallback = do
   where
     hsFunc :: IORef Int -> JSCallback Int -> DukCall ()
     -- run the callback then return a value later
-    hsFunc ref cb = evalCallback' cb >>= \v -> addEvent $ return $ void $ liftIO (writeIORef ref v)
+    hsFunc ref cb = evalCallback cb >>= \v -> addEvent $ return $ void $ liftIO (writeIORef ref v)
     -- return a value later that runs the callback and returns a value
     hsFunc' :: IORef Int -> JSCallback Int -> DukCall ()
     hsFunc' ref cb = addEvent $ return $ do
-      v <- evalCallback' cb
+      v <- evalCallback cb
       liftIO $ writeIORef ref v
       return ()
 
@@ -281,7 +281,7 @@ setTimeoutTest = do
   readIORef act >>= (@=?) True
   where
     delay :: JSCallback Int -> DukCall ()
-    delay cb = addEvent ( do { liftIO (threadDelay 1000000); return $ void $ evalCallback' cb })
+    delay cb = addEvent ( do { liftIO (threadDelay 1000000); return $ void $ evalCallback cb })
     final :: IORef Bool -> DukCall Int
     final ref = void (liftIO $ writeIORef ref True) >> pure 0
 

@@ -236,7 +236,7 @@ instance {-# OVERLAPS #-} (KnownNat (Arity ((JSCallback a) -> v)), Dukkable v) =
       _ -> return $ [C.pure| int {DUK_RET_TYPE_ERROR}|]
 
 class (KnownNat (Arity a)) => DukCallable a where
-  evalCallback :: JSCallback a -> C.CInt -> DukCall () -> CBExpand a
+  evalCallback' :: JSCallback a -> C.CInt -> DukCall () -> CBExpand a
   makeCall :: JSCallback a -> C.CInt -> DukCall C.CInt
   makeCall (MkJSCallback name) arity = do
     ctx <- castPtr <$> asks dceCtx
@@ -257,7 +257,7 @@ type family CBExpand a where
   CBExpand a = DukCall a
 
 instance {-# OVERLAPPABLE #-} (FromJSON a, KnownNat (Arity a), CBExpand a ~ DukCall a) => DukCallable a where
-  evalCallback cb ar accum = do
+  evalCallback' cb ar accum = do
     accum
     void $ makeCall cb ar
     ctx' <- castPtr <$> asks dceCtx
@@ -270,7 +270,7 @@ instance {-# OVERLAPPABLE #-} (FromJSON a, KnownNat (Arity a), CBExpand a ~ DukC
       Right v -> return v
 
 instance (ToJSON b, DukCallable a, KnownNat (Arity (b -> a))) => DukCallable (b -> a) where
-  evalCallback (MkJSCallback name) ar accum b = evalCallback nextCb ar accum'
+  evalCallback' (MkJSCallback name) ar accum b = evalCallback' nextCb ar accum'
     where
       accum' = do
         accum
@@ -278,8 +278,8 @@ instance (ToJSON b, DukCallable a, KnownNat (Arity (b -> a))) => DukCallable (b 
         liftIO $ pushVal ctx $ toJSON b
       nextCb = MkJSCallback name :: JSCallback a
 
-evalCallback' :: forall a. (KnownNat (Arity a), DukCallable a) => JSCallback a -> CBExpand a
-evalCallback' cb = evalCallback cb (fromInteger $ natVal p) (pure ())
+evalCallback :: forall a. (KnownNat (Arity a), DukCallable a) => JSCallback a -> CBExpand a
+evalCallback cb = evalCallback' cb (fromInteger $ natVal p) (pure ())
   where p = Proxy :: Proxy (Arity a)
 
 pushVal :: DuktapeCtx -> Value -> IO ()
