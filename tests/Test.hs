@@ -6,7 +6,6 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE DeriveGeneric #-}
 
 import Protolude
 import Test.Tasty
@@ -54,6 +53,8 @@ tests =
     , testGroup "Callbacks"
     [ testCase "Single-arg callback" singleCallback
     , testCase "Triple-arg callback" tripleCallback
+    , testCase "Namespaced callback" namedCallback
+    , testCase "Namespaced callback with missing namespace throws" namedCallbackExc
     , testCase "Callback to Haskell from Haskell via JS" hsCallback
     , testCase "Callback to JS from Haskell worker" asyncCallback
     , testCase "Nested JS calls to Haskell worker" asyncNestedCallback
@@ -111,7 +112,7 @@ typeRefl _ = forAll $ \(x :: a) -> monadic $ do
     let hsFunc = return x :: DukCall a
     let callStr = "(f())"
     direct_ref <- runDuk $ dukLift $ execJS evalStr :: IO a
-    direct_call <- runDuk $ do { injectFunc hsFunc "f"; dukLift $ execJS callStr} :: IO a
+    direct_call <- runDuk $ do { injectFunc hsFunc [] "f"; dukLift $ execJS callStr} :: IO a
     return $ and $ fmap (== x) [direct_ref, direct_call]
 
 monadLaw :: TestTree
@@ -125,7 +126,7 @@ singleCallback :: Assertion
 singleCallback = do
   ref <- newIORef 0
   let js = "function getVal(){ return 5; } f(getVal);"
-  _ <- runDuk $ do { injectFunc (hsFunc ref) "f"; dukLift $ execJS js } :: IO Int
+  _ <- runDuk $ do { injectFunc (hsFunc ref) [] "f"; dukLift $ execJS js } :: IO Int
   v <- readIORef ref
   v @?= 5
   where
@@ -136,18 +137,42 @@ tripleCallback :: Assertion
 tripleCallback = do
   ref <- newIORef 0
   let js = "function getVal(a, b, c){ return a * b * c; } f(getVal);"
-  _ <- runDuk $ do { injectFunc (hsFunc ref) "f"; dukLift $ execJS js } :: IO Int
+  _ <- runDuk $ do { injectFunc (hsFunc ref) [] "f"; dukLift $ execJS js } :: IO Int
   v <- readIORef ref
   v @?= 27
   where
     hsFunc :: IORef Int -> JSCallback (Int -> Int -> Int -> Int) -> DukCall Int
     hsFunc ref cb = evalCallback' cb 3 3 3 >>= \v -> liftIO (writeIORef ref v) >> return v
 
+namedCallback :: Assertion
+namedCallback = do
+  ref <- newIORef 0
+  let js = "function getVal(a, b, c){ return a * b * c; } foo.bar.baz.f(getVal);"
+  let setup = "foo = {}; foo.bar = {}; foo.bar.baz = {};"
+  _ <- runDuk $ do {
+    _ <- dukLift $ execJS setup :: Duk Value;
+    injectFunc (hsFunc ref) ["foo", "bar", "baz"] "f";
+    dukLift $ execJS js } :: IO Int
+  v <- readIORef ref
+  v @?= 27
+  where
+    hsFunc :: IORef Int -> JSCallback (Int -> Int -> Int -> Int) -> DukCall Int
+    hsFunc ref cb = evalCallback' cb 3 3 3 >>= \v -> liftIO (writeIORef ref v) >> return v
+
+namedCallbackExc :: Assertion
+namedCallbackExc =
+  runDuk (injectFunc hsFunc ["foo", "bar", "baz"] "f") `catchDeep` \(e :: SomeException) -> do
+    let err = "Not the exception we were looking for!"
+    "foo" `T.isInfixOf` T.pack (displayException e) @? err
+  where
+    hsFunc :: DukCall Int
+    hsFunc = return 5
+
 hsCallback :: Assertion
 hsCallback = do
   ref <- newIORef 0
   let js = "f(g);"
-  _ <- runDuk $ do { injectFunc (f ref) "f"; injectFunc g "g"; dukLift $ execJS js } :: IO Int
+  _ <- runDuk $ do { injectFunc (f ref) [] "f"; injectFunc g [] "g"; dukLift $ execJS js } :: IO Int
   v <- readIORef ref
   v @?= 10
   where
@@ -160,9 +185,9 @@ asyncCallback :: Assertion
 asyncCallback = do
   ref <- newIORef 0
   let js = "function getVal(){ return 11; } f(getVal);"
-  _ <- runDuk $ do { injectFunc (hsFunc ref) "f"; dukLift $ execJS js } :: IO ()
+  _ <- runDuk $ do { injectFunc (hsFunc ref) [] "f"; dukLift $ execJS js } :: IO ()
   readIORef ref >>= (@=?) 11
-  _ <- runDuk $ do { injectFunc (hsFunc' ref) "f"; dukLift $ execJS js } :: IO ()
+  _ <- runDuk $ do { injectFunc (hsFunc' ref) [] "f"; dukLift $ execJS js } :: IO ()
   readIORef ref >>= (@=?) 11
   where
     hsFunc :: IORef Int -> JSCallback Int -> DukCall ()
@@ -179,7 +204,7 @@ asyncNestedCallback :: Assertion
 asyncNestedCallback = do
   ref <- newIORef 0
   let letters = T.singleton <$> ['a'..'z']
-  let injections = sequence $ injectFunc (hsFunc ref) <$> letters
+  let injections = sequence $ injectFunc (hsFunc ref) [] <$> letters
   let js = nest letters
   _ <- runDuk $ do { void injections; dukLift $ execJS js } :: IO ()
   readIORef ref >>= (@=?) 26
@@ -194,7 +219,7 @@ multipleWorkers :: Assertion
 multipleWorkers = do
   refs <- replicateM 26 (newIORef 0)
   let letters = T.singleton <$> ['a'..'z']
-  let injections = zipWithM (\c ref -> injectFunc (hsFunc ref) c) letters refs
+  let injections = zipWithM (\c ref -> injectFunc (hsFunc ref) [] c) letters refs
   let js = mconcat $ (<> "();") <$> letters
   _ <- runDuk $ do { void injections; dukLift $ execJS js } :: IO ()
   sequence_ $ (readIORef >=> (@=?) 1) <$> refs
@@ -219,7 +244,7 @@ canKillMany = do
 canCatchCallbackExc :: Assertion
 canCatchCallbackExc = do
   death <- newIORef False
-  _ :: () <- (runDuk $ do { injectFunc hsFunc "f"; dukLift $ execJS "f();" }) `catchDeep` \(e :: SomeException) -> do
+  _ :: () <- (runDuk $ do { injectFunc hsFunc [] "f"; dukLift $ execJS "f();" }) `catchDeep` \(e :: SomeException) -> do
     let err = "Not the exception we were looking for!"
     "wrry" `T.isInfixOf` T.pack (displayException e) @? err
     "asplode" `T.isInfixOf` T.pack (displayException e) @? err
@@ -235,7 +260,7 @@ canCatchManyCallbackExc = replicateConcurrently_ 100 canCatchCallbackExc
 canCatchWorkerExc :: Assertion
 canCatchWorkerExc = do
   death <- newIORef False
-  _ :: () <- (runDuk $ do { injectFunc hsFunc "f"; dukLift $ execJS "function g(){}; f();" }) `catchDeep` \(e :: SomeException) -> do
+  _ :: () <- (runDuk $ do { injectFunc hsFunc [] "f"; dukLift $ execJS "function g(){}; f();" }) `catchDeep` \(e :: SomeException) -> do
     let err = "Not the exception we were looking for!"
     "wrry" `T.isInfixOf` T.pack (displayException e) @? err
     "asplode" `T.isInfixOf` T.pack (displayException e) @? err
@@ -251,7 +276,7 @@ canCatchManyWorkerExc = replicateConcurrently_ 100 canCatchWorkerExc
 setTimeoutTest :: Assertion
 setTimeoutTest = do
   act <- newIORef False
-  _ :: () <- (runDuk $ do { injectFunc delay "f"; injectFunc (final act) "g"; dukLift $ execJS "f(g);" })
+  _ :: () <- (runDuk $ do { injectFunc delay [] "f"; injectFunc (final act) [] "g"; dukLift $ execJS "f(g);" })
   readIORef act >>= (@=?) True
   where
     delay :: JSCallback Int -> DukCall ()

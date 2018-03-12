@@ -153,29 +153,34 @@ execJS code = do
     Left err -> throwString $ err ++ " # trying to parse: " ++ (T.unpack . T.decodeUtf8 $ s)
     Right v -> return v
 
-injectFunc :: Dukkable f => f -> T.Text -> Duk ()
-injectFunc fn name = do
+injectFunc :: Dukkable f => f -> [T.Text] -> T.Text -> Duk ()
+injectFunc fn path name = do
   ctx <- gets ctx
   let ctx' = castPtr ctx
   main <- gets mainThread
   excBox <- gets exc
   taskQ <- gets tasks
   numWorkers <- gets workers
-  let name' = T.encodeUtf8 name
   let runFunc = runReaderT (entry fn) (DukCallEnv main ctx excBox taskQ numWorkers) `catchDeep` \(e :: SomeException) -> do
         void $ putMVar excBox e
         return $ [C.pure| int {DUK_RET_EVAL_ERROR}|]
   wrappedFunc <- liftIO $ $(C.mkFunPtr [t|Ptr () -> IO C.CInt|]) $ const runFunc
   let numArgs = fromInteger $ getArgs fn
+  let name' = T.encodeUtf8 name
+  liftIO $ [C.exp| void {duk_push_global_object($(void* ctx'))}|]
+  liftIO $ walk ctx' path
   liftIO $ [C.block| void {
-    duk_push_global_object($(void* ctx'));
     duk_push_c_function($(void* ctx'), (int(*)(duk_context*))$(int (*wrappedFunc)(void*)), $(int numArgs));
     duk_put_prop_lstring($(void* ctx'), -2, $bs-ptr:name', $bs-len:name');
   }|]
   oldGc <- gets gc
   modify $ \e -> e {gc = freeHaskellFunPtr wrappedFunc >> oldGc}
   pure ()
-
+  where
+    walk ctx paths = forM_ paths $ \prop -> do
+      let enc = T.encodeUtf8 prop
+      code <- [C.exp| int { duk_get_prop_lstring($(void* ctx), -1, $bs-ptr:enc, $bs-len:enc) }|]
+      when (code == 0) $ throwString $ T.unpack $ "Couldn't traverse property " <> prop
 
 addEvent :: DukCall (DukCall ()) -> DukCall ()
 addEvent dc = do
@@ -183,8 +188,7 @@ addEvent dc = do
   tasks <- asks dceTasks
   excBox <- asks dceExc
   numworkers <- asks dceWorkers
-  void $ liftIO $ modifyMVar_ numworkers (\n -> do
-                                          return $! n + 1)
+  void $ liftIO $ modifyMVar_ numworkers (\n -> return $! n + 1)
   void $ liftIO $ async $ (do
       ret <- runReaderT dc env
       void $ putMVar tasks ret
