@@ -17,42 +17,24 @@ import Test.SmallCheck.Series
 import Data.Aeson.Types hiding (Series)
 import Data.Aeson hiding (Series)
 
-import Control.Monad.IO.Class
 import Control.Exception.Safe
 import Control.Concurrent.Async
 
-import Data.Typeable
-import Data.Monoid
 import Data.String
 import Data.IORef
 
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 
-import Data.Proxy
 import Lib
-import GHC.Generics
-import GHC.TypeLits
 import Data.Scientific
-import Data.Hashable
 import qualified Data.HashMap.Strict as HMS
 import qualified Data.Vector as V
 
-import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 
 main :: IO ()
 main = defaultMain tests
-
-
-data Person = Person {
-  pName :: T.Text,
-  pAge :: Int,
-  pAddress :: Maybe T.Text
-  } deriving (Ord, Eq, Show, Generic)
-
-instance FromJSON Person
-instance ToJSON Person
 
 tests :: TestTree
 tests =
@@ -68,7 +50,6 @@ tests =
     , testRefl $ Proxy @Value
     , testRefl $ Proxy @T.Text
     , testRefl $ Proxy @String
-    , testCase "Person-object test" testPerson
     ]
     , testGroup "Callbacks"
     [ testCase "Single-arg callback" singleCallback
@@ -80,7 +61,7 @@ tests =
     ]
     , testGroup "Exception handling and termination"
     [ testCase "Can kill a long-running JS process" canKill
-    , testCase "Can kill multiple concurrent long-running JS processes" canKill
+    , testCase "Can kill multiple concurrent long-running JS processes" canKillMany
     , testCase "Can capture the exception of a Haskell callback" canCatchCallbackExc
     , testCase "Can capture the exceptions of concurrent Haskell callbacks" canCatchManyCallbackExc
     , testCase "Can capture the exceptions of Haskell workers" canCatchWorkerExc
@@ -98,9 +79,9 @@ instance (Eq k, Hashable k, Serial m k, Serial m v) => Serial m (HMS.HashMap k v
   series = do
     key <- series
     value <- series
-    let elem = return (key,value)
+    let element = return (key,value)
     d <- getDepth
-    ls <- listM d elem
+    ls <- listM d element
     return $ HMS.fromList ls
 
 instance Serial m a => Serial m (V.Vector a) where
@@ -139,14 +120,6 @@ monadLaw = testProperty "monad return law" $
   forAll $ \(x :: Int) -> monadic $ do
     v <- runDuk $ return x
     return $ v == x
-
-testPerson :: Assertion
-testPerson = do
-  let p = Person "Bob" 50 Nothing
-  let jsSerial = (T.decodeUtf8 . BSL.toStrict . encode $ p)
-  let evalStr = "(" <> jsSerial <> ")"
-  val <- runDuk $ dukLift $ execJS evalStr :: IO Person
-  val @?= p
 
 singleCallback :: Assertion
 singleCallback = do

@@ -79,7 +79,7 @@ library
                     , TypeOperators
 test-suite tests
     default-language: Haskell2010
-    ghc-options: -threaded -O2 -Wall
+    ghc-options: -threaded -O2 -Wall -Wno-orphans
     hs-source-dirs: tests
     main-is: Test.hs
     type: exitcode-stdio-1.0
