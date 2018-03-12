@@ -57,12 +57,11 @@ C.include "interrupt.h"
 data DuktapeHeap
 type DuktapeCtx = Ptr DuktapeHeap
 
-newtype JSCallback a = MkJSCallback { jsCallbackKey :: T.Text } deriving Show
+newtype JSCallback a = MkJSCallback T.Text deriving Show
 
 -- Top level Duk execution env
 data DukEnv = DukEnv {
   ctx :: DuktapeCtx,
-  mainThread :: ThreadId,
   gc :: IO (),
   exc :: MVar SomeException,
   tasks :: MVar (Task ()),
@@ -71,7 +70,6 @@ data DukEnv = DukEnv {
 
 -- Environment for HS callbacks and scheduled tasks
 data DukCallEnv = DukCallEnv {
-  dceMain :: ThreadId,
   dceCtx :: DuktapeCtx,
   dceExc :: MVar SomeException,
   dceTasks :: MVar (Task ()),
@@ -98,16 +96,14 @@ cleanup ctx = [C.exp| void { duk_destroy_heap($(void* ctx')) }|]
 -- Promote a nested JS execution action to an action in the JS main thread
 dukLift :: DukCall a -> Duk a
 dukLift dc = do
-  main <- gets mainThread
   ctx <- gets ctx
   excBox <- gets exc
   tasks <- gets tasks
   workers <- gets workers
-  liftIO $ runReaderT dc $ DukCallEnv main ctx excBox tasks workers
+  liftIO $ runReaderT dc $ DukCallEnv ctx excBox tasks workers
 
 runDuk :: Duk a -> IO a
 runDuk dk = do
-  me <- myThreadId
   excBox <- newEmptyMVar
   taskQ <- newEmptyMVar
   numWorkers <- newMVar 0
@@ -115,16 +111,16 @@ runDuk dk = do
     (castPtr <$> [C.block| void* {
         return duk_create_heap(NULL, NULL, NULL, 0, &duktape_fatal_handler);
       }|])
-    (cleanup)
+    cleanup
     (\ctx -> do
-        retme <- runStateT dk $ DukEnv ctx me (pure ()) excBox taskQ numWorkers
+        retme <- runStateT dk $ DukEnv ctx (pure ()) excBox taskQ numWorkers
         let loop = do
               works <- readMVar numWorkers
               case works of
                 0 -> pure ()
                 _ -> do
                   t <- takeMVar taskQ
-                  runReaderT t $ DukCallEnv me ctx excBox taskQ numWorkers
+                  runReaderT t $ DukCallEnv ctx excBox taskQ numWorkers
                   void $ liftIO $ modifyMVar_ numWorkers (\n -> return $! (n - 1))
                   loop
         loop
@@ -170,11 +166,10 @@ injectFunc :: Dukkable f => f -> [T.Text] -> T.Text -> Duk ()
 injectFunc fn path name = do
   ctx <- gets ctx
   let ctx' = castPtr ctx
-  main <- gets mainThread
   excBox <- gets exc
   taskQ <- gets tasks
   numWorkers <- gets workers
-  let runFunc = runReaderT (entry fn) (DukCallEnv main ctx excBox taskQ numWorkers) `catchDeep` \(e :: SomeException) -> do
+  let runFunc = runReaderT (entry fn) (DukCallEnv ctx excBox taskQ numWorkers) `catchDeep` \(e :: SomeException) -> do
         void $ putMVar excBox e
         return $ [C.pure| int {DUK_RET_EVAL_ERROR}|]
   wrappedFunc <- liftIO $ $(C.mkFunPtr [t|Ptr () -> IO C.CInt|]) $ const runFunc
