@@ -69,6 +69,7 @@ tests =
     , testCase "Can capture the exceptions of concurrent Haskell workers" canCatchManyWorkerExc
     , testCase "Can catch unrepresentable data exceptions" canCatchBadcoercion
     , testCase "Can catch errors from JS" canCatchSourceErr
+    , testCase "Calling Haskell with incorrect convention is caught" canCatchBadCC
     ]
     , testGroup "Haskell workers"
     [ testCase "Can use Haskell worker for setTimeout" setTimeoutTest
@@ -299,3 +300,11 @@ canCatchSourceErr = do
   let js = "y this explod tho"
   runDuk $ dukLift $ execJS js `catchDeep` \(_ :: SomeException) -> liftIO $ writeIORef death True
   readIORef death >>= (@=?) True
+
+canCatchBadCC :: Assertion
+canCatchBadCC = do
+  death <- newIORef False
+  runDuk (injectFunc func [] "f" >> dukLift (execJS "f()")) `catchDeep` \(_ :: SomeException) -> liftIO $ writeIORef death True
+  readIORef death >>= (@=?) True
+  where
+    func a b = return $ a + b :: DukCall Integer
