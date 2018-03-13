@@ -143,7 +143,7 @@ execJS code = do
     volatile int ret = enable_interrupt();
     if(!ret)
     {
-      duk_eval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs);
+      duk_peval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs);
     } else {
       return 1;
     }
@@ -219,14 +219,18 @@ instance {-# OVERLAPS #-} (ToJSON v, KnownNat (Arity v)) => Dukkable (DukCall v)
 instance (FromJSON a, KnownNat (Arity (a -> v)), Dukkable v) => Dukkable (a -> v) where
   entry f = do
     ctx' <- castPtr <$> asks dceCtx
-    str <- liftIO $ join $ BS.packCString <$> [C.block|const char* {
-              const char* ret = duk_json_encode($(void* ctx'), -1);
-              duk_pop($(void* ctx'));
-              return ret;
-    }|]
-    case decode (BSL.fromStrict str) of
-       Nothing -> return $ [C.pure| int {DUK_RET_TYPE_ERROR}|]
-       Just val -> entry (f val)
+    valid_arg <- liftIO $ [C.exp| int { duk_is_object_coercible($(void* ctx'), -1) || duk_is_null($(void* ctx'), -1) } |]
+    if valid_arg == 0
+      then return [C.pure| int {DUK_RET_EVAL_ERROR} |]
+      else do
+        str <- liftIO $ join $ BS.packCString <$> [C.block|const char* {
+                  const char* ret = duk_json_encode($(void* ctx'), -1);
+                  duk_pop($(void* ctx'));
+                  return ret;
+        }|]
+        case decode (BSL.fromStrict str) of
+          Nothing -> return $ [C.pure| int {DUK_RET_TYPE_ERROR}|]
+          Just val -> entry (f val)
 
 instance {-# OVERLAPS #-} (KnownNat (Arity ((JSCallback a) -> v)), Dukkable v) => Dukkable (JSCallback a -> v) where
   entry f = do
