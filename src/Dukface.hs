@@ -31,6 +31,7 @@ import qualified Foreign.C.Types as C
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Text as T
+--import qualified Data.Text.IO as T.IO
 import qualified Data.Text.Encoding as T
 import Foreign.Ptr
 import Foreign.C.String
@@ -204,6 +205,18 @@ addEvent dc = do
                           )
     `catchAny` \(e :: SomeException) -> void $ tryPutMVar excBox e
 
+-- Debug and print the stack
+-- debugStack :: DukCall ()
+-- debugStack = do
+--   ctx' <- castPtr <$> asks dceCtx
+--   dump <- liftIO $ [C.block| const char* {
+--                         duk_push_context_dump($(void* ctx'));
+--                         return duk_safe_to_string($(void* ctx'), -1);
+--                                           } |]
+--   liftIO $ [C.exp|void { duk_pop($(void* ctx')) }|]
+--   liftIO $ BS.packCString dump >>= T.IO.putStrLn . T.decodeUtf8
+--   return ()
+
 class KnownNat (Arity f) => Dukkable f where
   getArgs :: KnownNat (Arity f) => f -> Integer
   getArgs _ = natVal (Proxy :: Proxy (Arity f))
@@ -219,11 +232,14 @@ instance {-# OVERLAPS #-} (ToJSON v, KnownNat (Arity v)) => Dukkable (DukCall v)
 instance (FromJSON a, KnownNat (Arity (a -> v)), Dukkable v) => Dukkable (a -> v) where
   entry f = do
     ctx' <- castPtr <$> asks dceCtx
-    valid_arg <- liftIO $ [C.exp| int { duk_is_object_coercible($(void* ctx'), -1) || duk_is_null($(void* ctx'), -1) } |]
+    -- our next curry argument is $arity below the top of the stack
+    let argIdx = fromInteger $ natVal (Proxy :: Proxy (Arity (a -> v)))
+    valid_arg <- liftIO $ [C.exp| int { duk_is_object_coercible($(void* ctx'), -$(int argIdx)) || duk_is_null($(void* ctx'), -$(int argIdx)) } |]
     if valid_arg == 0
       then return [C.pure| int {DUK_RET_EVAL_ERROR} |]
       else do
         str <- liftIO $ join $ BS.packCString <$> [C.block|const char* {
+                  duk_dup($(void* ctx'), -$(int argIdx));
                   const char* ret = duk_json_encode($(void* ctx'), -1);
                   duk_pop($(void* ctx'));
                   return ret;
@@ -235,11 +251,16 @@ instance (FromJSON a, KnownNat (Arity (a -> v)), Dukkable v) => Dukkable (a -> v
 instance {-# OVERLAPS #-} (KnownNat (Arity ((JSCallback a) -> v)), Dukkable v) => Dukkable (JSCallback a -> v) where
   entry f = do
     ctx' <- castPtr <$> asks dceCtx
+    -- our next curry argument is $arity below the top of the stack
+    let argIdx = fromInteger $ natVal (Proxy :: Proxy (Arity ((JSCallback a) -> v)))
     rand_str <- liftIO $ T.encodeUtf8 . T.pack . show <$> getStdRandom (randomR (1 :: Integer, 99999999))
-    isFunc <- liftIO [C.exp|int { duk_is_function($(void* ctx'), -1) } |]
+    isFunc <- liftIO [C.exp|int { duk_is_function($(void* ctx'), -$(int argIdx)) } |]
     case isFunc of
       1 -> do
-        liftIO $ [C.exp| void { duk_put_global_lstring($(void* ctx'), $bs-ptr:rand_str, $bs-len:rand_str) }|]
+        liftIO $ [C.block| void {
+                     duk_dup($(void* ctx'), -$(int argIdx));
+                     duk_put_global_lstring($(void* ctx'), $bs-ptr:rand_str, $bs-len:rand_str);
+                     }|]
         let cb = MkJSCallback . T.decodeUtf8 $ rand_str
         entry (f cb)
       _ -> return $ [C.pure| int {DUK_RET_TYPE_ERROR}|]

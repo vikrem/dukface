@@ -53,6 +53,7 @@ tests =
     , testGroup "Callbacks"
     [ testCase "Single-arg callback" singleCallback
     , testCase "Triple-arg callback" tripleCallback
+    , testCase "JS->HS function call" hsCall
     , testCase "Namespaced callback" namedCallback
     , testCase "Namespaced callback with missing namespace throws" namedCallbackExc
     , testCase "Callback to Haskell from Haskell via JS" hsCallback
@@ -139,13 +140,13 @@ singleCallback = do
 tripleCallback :: Assertion
 tripleCallback = do
   ref <- newIORef 0
-  let js = "function getVal(a, b, c){ return a * b * c; } f(getVal);"
+  let js = "function getVal(a, b, c){ return a * a; } f(getVal);"
   _ <- runDuk $ do { injectFunc (hsFunc ref) [] "f"; dukLift $ execJS js } :: IO Int
   v <- readIORef ref
-  v @?= 27
+  v @?= 9
   where
-    hsFunc :: IORef Int -> JSCallback (Int -> Int -> Int -> Int) -> DukCall Int
-    hsFunc ref cb = evalCallback cb 3 3 3 >>= \v -> liftIO (writeIORef ref v) >> return v
+    hsFunc :: IORef Int -> JSCallback (Int -> String -> String -> Int) -> DukCall Int
+    hsFunc ref cb = evalCallback cb 3 "hi" "hello" >>= \v -> liftIO (writeIORef ref v) >> return v
 
 namedCallback :: Assertion
 namedCallback = do
@@ -170,6 +171,15 @@ namedCallbackExc =
   where
     hsFunc :: DukCall Int
     hsFunc = return 5
+
+hsCall :: Assertion
+hsCall = do
+  let js = "f(5, 10, 'hello');"
+  v <- runDuk $ do { injectFunc f [] "f"; dukLift $ execJS js } :: IO Int
+  v @?= 20
+  where
+    f :: Int -> Int -> String -> DukCall Int
+    f a b s = return $ a + b + length s
 
 hsCallback :: Assertion
 hsCallback = do
@@ -279,11 +289,11 @@ canCatchManyWorkerExc = replicateConcurrently_ 100 canCatchWorkerExc
 setTimeoutTest :: Assertion
 setTimeoutTest = do
   act <- newIORef False
-  _ :: () <- (runDuk $ do { injectFunc delay [] "f"; injectFunc (final act) [] "g"; dukLift $ execJS "f(g);" })
+  _ :: () <- (runDuk $ do { injectFunc delay [] "f"; injectFunc (final act) [] "g"; dukLift $ execJS "f(g, 1000);" })
   readIORef act >>= (@=?) True
   where
-    delay :: JSCallback Int -> DukCall ()
-    delay cb = addEvent ( do { liftIO (threadDelay 1000000); return $ void $ evalCallback cb })
+    delay :: JSCallback Int -> Int -> DukCall ()
+    delay cb msecDelay = addEvent ( do { liftIO (threadDelay $ msecDelay * 1000); return $ void $ evalCallback cb })
     final :: IORef Bool -> DukCall Int
     final ref = void (liftIO $ writeIORef ref True) >> pure 0
 
