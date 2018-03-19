@@ -302,7 +302,7 @@ canCatchBadcoercion = do
   let js = "undefined"
   (runDuk $ dukLift $ execJS js) `catchDeep` \(e :: SomeException) -> do
     let err = "Not the exception we were looking for!"
-    "coercible" `T.isInfixOf` T.pack (displayException e) @? (err <> " : " <> displayException e)
+    "encode" `T.isInfixOf` T.pack (displayException e) @? (err <> " : " <> displayException e)
 
 canCatchSourceErr :: Assertion
 canCatchSourceErr = do

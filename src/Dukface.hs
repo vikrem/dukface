@@ -54,6 +54,7 @@ import qualified Data.HashMap.Strict as HMS
 C.context (C.baseCtx <> C.funCtx <> C.fptrCtx <> C.bsCtx)
 C.include "duktape.h"
 C.include "interrupt.h"
+C.include "dukface.h"
 
 data DuktapeHeap
 type DuktapeCtx = Ptr DuktapeHeap
@@ -110,6 +111,7 @@ runDuk dk = do
   numWorkers <- newMVar 0
   (ret, newE) <- bracket
     (castPtr <$> [C.block| void* {
+        install_handler();
         return duk_create_heap(NULL, NULL, NULL, 0, &duktape_fatal_handler);
       }|])
     cleanup
@@ -140,26 +142,20 @@ execJS code = do
   ctx' <- castPtr <$> asks dceCtx
   let bs = T.encodeUtf8 code
   errCode <- lift $ [C.block| int {
-    install_handler();
-    volatile int ret = enable_interrupt();
-    if(!ret)
-    {
       duk_peval_lstring($(void* ctx'), $bs-ptr:bs, $bs-len:bs);
-    } else {
-      return 1;
-    }
-    return 0;
+      return 0;
   }|]
   top_is_err <- liftIO $ [C.exp| int { duk_is_error($(void* ctx'), -1) }|]
   lift $ when (errCode /= 0 || top_is_err /= 0) $ do
     err <- [C.exp| const char* { duk_safe_to_string($(void* ctx'), -1) }|]
     peekCString err >>= throwString
-  can_get_val <- lift $ [C.exp| int {
-    (duk_is_object_coercible($(void* ctx'), -1) || duk_is_null($(void* ctx'), -1)) && !duk_is_function($(void* ctx'), -1) } |]
-  lift $ when (can_get_val /= 1) $ do
-    err <- [C.exp| const char* { duk_safe_to_string($(void* ctx'), -1) }|]
-    peekCString err >>= \e -> throwString $ "Value isn't object-coercible or null: " <> e
-  pArr <- lift $ [C.exp| const char* {duk_json_encode($(void* ctx'), -1)}|]
+  -- lift $ when (can_get_val /= 1) $ do
+  --   err <- [C.exp| const char* { duk_safe_to_string($(void* ctx'), -1) }|]
+  --   peekCString err >>= \e -> throwString $ "Value isn't object-coercible or null: " <> e
+  jsonErr <- lift $ [C.exp| int {dh_safe_json_encode($(void* ctx'))}|]
+  pArr <- lift $ [C.exp|const char* { duk_safe_to_string($(void* ctx'), -1) } |]
+  lift $ when (jsonErr /= 1) $
+    peekCString pArr >>= throwString
   s <- liftIO $ BS.packCString pArr
   case eitherDecode $ BSL.fromStrict s of
     Left err -> throwString $ err ++ " # trying to parse: " ++ (T.unpack . T.decodeUtf8 $ s)
@@ -235,9 +231,10 @@ instance (FromJSON a, KnownNat (Arity (a -> v)), Dukkable v) => Dukkable (a -> v
     ctx' <- castPtr <$> asks dceCtx
     -- our next curry argument is $arity below the top of the stack
     let argIdx = fromInteger $ natVal (Proxy :: Proxy (Arity (a -> v)))
-    valid_arg <- liftIO $ [C.exp| int { duk_is_object_coercible($(void* ctx'), -$(int argIdx)) || duk_is_null($(void* ctx'), -$(int argIdx)) } |]
+    valid_arg <- lift $ [C.exp| int {
+      (duk_is_object_coercible($(void* ctx'), -$(int argIdx)) || duk_is_null($(void* ctx'), -$(int argIdx))) && !duk_is_function($(void* ctx'), -$(int argIdx)) } |]
     if valid_arg == 0
-      then return [C.pure| int {DUK_RET_EVAL_ERROR} |]
+      then return [C.pure| int {DUK_RET_TYPE_ERROR} |]
       else do
         str <- liftIO $ join $ BS.packCString <$> [C.block|const char* {
                   duk_dup($(void* ctx'), -$(int argIdx));

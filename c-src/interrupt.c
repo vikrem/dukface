@@ -25,53 +25,36 @@
 #include <string.h>
 #include <ucontext.h>
 
+#include "duktape.h"
 
-static __thread ucontext_t ctx;
-static __thread volatile int ret;
-static __thread volatile int int_enabled = 0;
-static struct sigaction old_sa;
+
+//static struct sigaction old_sa;
+static __thread int threadTimeout = 0;
 
 void sigpipe_handle(int x);
 void install_handler(void);
-int enable_interrupt(void);
-void disable_interrupt(void);
 
 void sigpipe_handle(int x) {
-  ret = 1;
-  if (setcontext(&ctx) == -1) {fprintf(stderr, "Setcontext failed!\n");}
+  threadTimeout = 1; // Set
 }
 
 void install_handler(void) {
+  threadTimeout = 0; // Reset
   struct sigaction sa;
   memset(&sa, 0, sizeof(struct sigaction));
   sigemptyset(&sa.sa_mask);
   sa.sa_handler = sigpipe_handle;
   (void) sigaction(SIGPIPE, &sa, NULL);
-  ret = 0;
-}
-
-int enable_interrupt(void) {
-  install_handler();
-  int_enabled = 1;
-  if (getcontext(&ctx) == -1) {fprintf(stderr, "Getcontext failed!\n");}
-  //fprintf(stderr, "Interrupting with return: %d\n", ret);
-  return ret;
-}
-
-void disable_interrupt(void) {
-  ret = 0;
-  int_enabled = 0;
-  if (getcontext(&ctx) == -1) {fprintf(stderr, "Getcontext failed!\n");}
-  (void) sigaction(SIGPIPE, &old_sa, NULL);
-}
-
-void force_interrupt(void) {
-  ret = 1;
-  if (!int_enabled) {fprintf(stderr, "Interrupts disabled! Can't safely return.\n");}
-  if (setcontext(&ctx) == -1) {fprintf(stderr, "Setcontext failed!\n");}
 }
 
 void duktape_fatal_handler(void* udata, const char* msg) {
   fprintf(stderr, "\n** FATAL error in Duktape: %s. Forcing interrupt.\n", msg);
-  force_interrupt();
+  fprintf(stderr, "\n** The application cannot continue. Halting \n");
+  __builtin_trap();
+  for(;;) {}
+}
+
+duk_bool_t dukTimeoutCheck(void* udata) {
+  return threadTimeout;
+  //__builtin_trap();
 }
